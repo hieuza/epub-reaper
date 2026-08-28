@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>EPUB Reaper</title>
+  <link rel="stylesheet" href="app.css">
+  <script src="lib/jszip.min.js"></script>
+  <script src="lib/epub.min.js"></script>
+</head>
+<body>
+  <!-- Top Navigation Bar (with macOS Titlebar space) -->
+  <header id="topBar" class="top-bar">
+    <div class="bar-left">
+      <button id="tocToggleBtn" class="icon-btn" title="Table of Contents (TOC)">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M4 6h16M4 12h16M4 18h10"/>
+        </svg>
+      </button>
+      <button id="searchToggleBtn" class="icon-btn" title="Search Book (Ctrl+F / ⌘F)">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/>
+        </svg>
+      </button>
+      <button id="bookmarkToggleBtn" class="icon-btn" title="Bookmarks">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/>
+        </svg>
+      </button>
+      <button id="historyToggleBtn" class="icon-btn" title="Reading History">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>
+        </svg>
+      </button>
+      <button id="favoritesToggleBtn" class="icon-btn" title="Favorites">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+          <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>
+        </svg>
+      </button>
+      <div class="book-info">
+        <h1 id="bookTitle" class="book-title">EPUB Reaper</h1>
+        <span id="bookAuthor" class="book-author">No book loaded</span>
+      </div>
+    </div>
+
+    <div class="bar-right">
+      <!-- Spread Mode Selector (1 Page vs 2 Pages) -->
+      <div class="control-group" id="spreadGroup">
+        <button id="spreadSingleBtn" class="control-btn active" title="Single Page View (1 Page)">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="5" y="3" width="14" height="18" rx="2"/>
+          </svg>
+          <span>1P</span>
+        </button>
+        <button id="spreadDoubleBtn" class="control-btn" title="Two-Page Spread (2 Pages)">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="2" y="3" width="9" height="18" rx="1"/>
+            <rect x="13" y="3" width="9" height="18" rx="1"/>
+          </svg>
+          <span>2P</span>
+        </button>
+      </div>
+
+      <!-- Column Width Selector (Narrow / Speed Read, Normal, Wide) -->
+      <div class="control-group" id="widthGroup" title="Column Width (e.g. Narrow for speed reading)">
+        <button id="widthNarrowBtn" class="control-btn" data-width="580" title="Narrow Column (580px - Speed Reading)">
+          <span>Narrow</span>
+        </button>
+        <button id="widthNormalBtn" class="control-btn active" data-width="760" title="Normal Column (760px)">
+          <span>Normal</span>
+        </button>
+        <button id="widthWideBtn" class="control-btn" data-width="960" title="Wide Column (960px)">
+          <span>Wide</span>
+        </button>
+      </div>
+
+      <!-- Font Size Controls -->
+      <div class="control-group">
+        <button id="fontSizeDecBtn" class="control-btn" title="Decrease font size">A-</button>
+        <span id="fontSizeDisplay" class="font-size-text">100%</span>
+        <button id="fontSizeIncBtn" class="control-btn" title="Increase font size">A+</button>
+      </div>
+
+      <!-- Theme Switcher -->
+      <div class="theme-picker">
+        <button class="theme-btn active" data-theme="dark" title="Dark Theme">🌙</button>
+        <button class="theme-btn" data-theme="light" title="Light Theme">☀️</button>
+        <button class="theme-btn" data-theme="sepia" title="Sepia Theme">📜</button>
+      </div>
+
+      <!-- Star / Favorite Current Book -->
+      <button id="favoriteBtn" class="icon-btn favorite-btn" title="Add book to Favorites (Star)">
+        <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2">
+          <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>
+        </svg>
+      </button>
+
+      <!-- Add Bookmark Quick Button -->
+      <button id="addBookmarkBtn" class="icon-btn" title="Bookmark current location">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M12 5v14M5 12h14"/>
+        </svg>
+      </button>
+
+      <!-- Open File Button -->
+      <button id="openFileBtn" class="open-btn" title="Open an EPUB file (⌘O)">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M12 4v12m-6-6l6-6 6 6M4 18h16"/>
+        </svg>
+        <span>Open</span>
+      </button>
+      <input type="file" id="fileInput" accept=".epub" style="display: none;">
+    </div>
+  </header>
+
+  <!-- Sidebar Overlay -->
+  <div id="sidebarOverlay" class="sidebar-overlay"></div>
+
+  <!-- Table of Contents Sidebar -->
+  <aside id="tocSidebar" class="drawer-sidebar">
+    <div class="drawer-header">
+      <h2>Table of Contents</h2>
+      <button id="closeTocBtn" class="icon-btn" title="Close">✕</button>
+    </div>
+    <div class="drawer-search-box">
+      <input type="text" id="tocFilterInput" placeholder="Filter chapters..." autocomplete="off">
+    </div>
+    <nav id="tocNav" class="drawer-content">
+      <p class="drawer-empty">Load an EPUB to view chapters.</p>
+    </nav>
+  </aside>
+
+  <!-- Search Drawer -->
+  <aside id="searchSidebar" class="drawer-sidebar">
+    <div class="drawer-header">
+      <h2>Search Book</h2>
+      <button id="closeSearchBtn" class="icon-btn" title="Close">✕</button>
+    </div>
+    <div class="drawer-search-box">
+      <form id="searchForm" class="search-form">
+        <input type="text" id="searchInput" placeholder="Search text..." autocomplete="off">
+        <button type="submit" class="search-submit-btn">Find</button>
+      </form>
+    </div>
+    <div id="searchResults" class="drawer-content">
+      <p class="drawer-empty">Enter a term to search this book.</p>
+    </div>
+  </aside>
+
+  <!-- Bookmarks Drawer -->
+  <aside id="bookmarkSidebar" class="drawer-sidebar">
+    <div class="drawer-header">
+      <h2>Bookmarks</h2>
+      <button id="closeBookmarkBtn" class="icon-btn" title="Close">✕</button>
+    </div>
+    <div id="bookmarkList" class="drawer-content">
+      <p class="drawer-empty">No bookmarks saved yet. Click the ＋ icon to add one.</p>
+    </div>
+  </aside>
+
+  <!-- History Drawer -->
+  <aside id="historySidebar" class="drawer-sidebar">
+    <div class="drawer-header">
+      <h2>Reading History</h2>
+      <button id="closeHistoryBtn" class="icon-btn" title="Close">✕</button>
+    </div>
+    <div id="historyList" class="drawer-content">
+      <p class="drawer-empty">No books opened yet.</p>
+    </div>
+  </aside>
+
+  <!-- Favorites Drawer -->
+  <aside id="favoritesSidebar" class="drawer-sidebar">
+    <div class="drawer-header">
+      <h2>Favorite Books</h2>
+      <button id="closeFavoritesBtn" class="icon-btn" title="Close">✕</button>
+    </div>
+    <div id="favoritesList" class="drawer-content">
+      <p class="drawer-empty">No favorite books yet. Click the ⭐ star button while reading to add one.</p>
+    </div>
+  </aside>
+
+  <!-- Main Viewer Container -->
+  <main id="mainViewer" class="main-viewer">
+    <!-- Welcome / Dropzone State -->
+    <div id="dropZone" class="welcome-card">
+      <div class="welcome-icon">🦖</div>
+      <h2>Read EPUBs Privately & Offline</h2>
+      <p class="welcome-desc">
+        Drag and drop your <code>.epub</code> file here, or click below to browse.
+      </p>
+      <button id="welcomeOpenBtn" class="welcome-upload-btn">
+        Browse Files
+      </button>
+
+      <!-- Recent Books Shelf -->
+      <div id="recentBooksSection" class="recent-books-section" style="display: none;">
+        <h3 class="recent-title">Recent Books</h3>
+        <div id="recentBooksList" class="recent-list"></div>
+      </div>
+
+      <div class="welcome-features">
+        <div class="feature-item">
+          <span class="feature-icon">🛡️</span>
+          <span>100% Offline & Private</span>
+        </div>
+        <div class="feature-item">
+          <span class="feature-icon">📖</span>
+          <span>1 or 2-Page Spreads</span>
+        </div>
+        <div class="feature-item">
+          <span class="feature-icon">⚡</span>
+          <span>Adjustable Column Width</span>
+        </div>
+        <div class="feature-item">
+          <span class="feature-icon">🔍</span>
+          <span>Full-Text Search</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Navigation Buttons -->
+    <button id="prevBtn" class="nav-arrow nav-prev" title="Previous Page (Left Arrow)" style="display: none;">
+      ‹
+    </button>
+
+    <!-- EPUB Render Area -->
+    <div id="viewerArea" class="viewer-area" style="display: none;"></div>
+
+    <button id="nextBtn" class="nav-arrow nav-next" title="Next Page (Right Arrow)" style="display: none;">
+      ›
+    </button>
+  </main>
+
+  <!-- Bottom Scrubber & Progress Bar -->
+  <footer id="bottomBar" class="bottom-bar" style="display: none;">
+    <div class="scrubber-left">
+      <span id="currentChapterName" class="chapter-label">Chapter</span>
+    </div>
+
+    <div class="scrubber-center">
+      <input type="range" id="progressSlider" class="progress-slider" min="0" max="100" step="1" value="0" title="Drag to jump to location">
+    </div>
+
+    <div class="scrubber-right">
+      <span id="progressPercentage" class="progress-label">0%</span>
+      <button id="jumpLocationBtn" class="jump-btn" title="Jump to exact percentage">Jump %</button>
+    </div>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>
