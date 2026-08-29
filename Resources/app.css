@@ -58,8 +58,6 @@ body {
   overflow: hidden;
   display: flex;
   flex-direction: column;
-  user-select: none;
-  -webkit-user-select: none;
 }
 
 /* ── Top Navigation Bar ─────────────────────────────────────────────────── */
@@ -208,12 +206,21 @@ body {
   align-items: center;
   justify-content: center;
   overflow: hidden;
+  user-select: text !important;
+  -webkit-user-select: text !important;
 }
 
 .viewer-area {
   margin: auto;
   position: relative;
   overflow: hidden;
+  user-select: text !important;
+  -webkit-user-select: text !important;
+}
+
+.viewer-area iframe {
+  user-select: text !important;
+  -webkit-user-select: text !important;
 }
 
 .nav-arrow {
@@ -525,3 +532,235 @@ body {
 .recent-item-title { font-size: 12px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 320px; }
 .recent-item-del { background: transparent; border: none; color: var(--text-muted); font-size: 11px; cursor: pointer; padding: 2px 6px; border-radius: 4px; }
 .recent-item-del:hover { color: #ef4444; background: rgba(239,68,68,0.15); }
+
+/* ── RSVP Speed Pacer Styles ────────────────────────────────────────────── */
+
+.rsvp-btn.active {
+  background: var(--primary);
+  color: #fff;
+}
+
+/* Phase 1: Speed Target Action Pill */
+.speed-target-bar {
+  position: absolute;
+  top: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.35);
+  border-radius: 24px;
+  padding: 6px 16px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  z-index: 35;
+  cursor: grab;
+  user-select: none;
+  -webkit-user-select: none;
+  animation: slide-down 0.2s ease-out;
+}
+
+.speed-target-bar:active, .speed-target-bar.is-dragging {
+  cursor: grabbing !important;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.6) !important;
+}
+
+@keyframes slide-down {
+  from { opacity: 0; transform: translate(-50%, -10px); }
+  to   { opacity: 1; transform: translate(-50%, 0); }
+}
+
+.speed-target-hint {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--primary);
+  letter-spacing: 0.2px;
+}
+
+.speed-target-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.speed-start-btn {
+  background: var(--primary);
+  color: #fff;
+  border: none;
+  border-radius: 16px;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 5px 12px;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(56, 189, 248, 0.35);
+  transition: transform 0.1s, opacity 0.15s;
+}
+.speed-start-btn:hover {
+  opacity: 0.9;
+  transform: scale(1.03);
+}
+
+.speed-exit-btn {
+  font-size: 11px;
+  padding: 4px 10px;
+  border-radius: 14px;
+}
+
+/* When targeting mode is active, show crosshair/pointer cursor */
+.speed-targeting-active iframe {
+  cursor: crosshair !important;
+}
+
+/* In-DOM Target Marker inside iframe document */
+.rsvp-target-marker {
+  position: absolute;
+  pointer-events: none;
+  z-index: 99999;
+  border-radius: 3px;
+  background-color: rgba(239, 68, 68, 0.28) !important;
+  outline: 2px solid #ef4444 !important;
+  box-shadow: 0 0 10px rgba(239, 68, 68, 0.6) !important;
+  animation: rsvp-pulse 1.8s ease-in-out infinite;
+  transition: all 0.08s ease-out;
+}
+
+/* Red Rectangle Resume Word Highlight in Book */
+.rsvp-resume-marker {
+  display: inline-block;
+  outline: 2px solid #ef4444 !important;
+  outline-offset: 1px !important;
+  background-color: rgba(239, 68, 68, 0.28) !important;
+  color: #ef4444 !important;
+  border-radius: 3px !important;
+  box-shadow: 0 0 10px rgba(239, 68, 68, 0.6) !important;
+  animation: rsvp-pulse 1.8s ease-in-out infinite;
+}
+
+@keyframes rsvp-pulse {
+  0%, 100% { outline-color: #ef4444; border-color: #ef4444; box-shadow: 0 0 10px rgba(239, 68, 68, 0.6); }
+  50% { outline-color: #f87171; border-color: #f87171; box-shadow: 0 0 18px rgba(239, 68, 68, 0.85); }
+}
+
+/* RSVP Speed Pacer Modal */
+.rsvp-modal {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.75);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.rsvp-dialog {
+  width: 580px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: 16px;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.5);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.rsvp-header {
+  height: 52px;
+  padding: 0 18px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--border-color);
+}
+.rsvp-header-left { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 14px; }
+.rsvp-header-right { display: flex; align-items: center; gap: 12px; }
+.rsvp-progress-text { font-size: 12px; color: var(--text-muted); font-weight: 500; }
+
+.rsvp-stage {
+  height: 180px;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-app);
+}
+
+.rsvp-crosshair {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 2px;
+  height: 16px;
+  background: #ef4444;
+  opacity: 0.75;
+}
+.rsvp-crosshair-top { top: 24px; }
+.rsvp-crosshair-bottom { bottom: 24px; }
+
+.rsvp-display-box {
+  display: flex;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Roboto, sans-serif;
+  font-size: 46px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  line-height: 1;
+  user-select: none;
+  min-width: 340px;
+}
+
+.rsvp-part { display: inline-block; white-space: pre; }
+.rsvp-left { flex: 1; text-align: right; color: var(--text-main); }
+.rsvp-orp { color: #ef4444; font-weight: 800; min-width: 0.6em; text-align: center; }
+.rsvp-right { flex: 1; text-align: left; color: var(--text-main); }
+
+.rsvp-controls {
+  padding: 16px 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: var(--bg-surface);
+  border-top: 1px solid var(--border-color);
+  gap: 12px;
+}
+
+.rsvp-play-btn {
+  background: var(--primary);
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  padding: 8px 24px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.rsvp-play-btn:hover { background: var(--primary-hover); }
+
+.rsvp-speed-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--btn-bg);
+  padding: 4px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+}
+.rsvp-speed-label { font-size: 11px; color: var(--text-muted); }
+.rsvp-wpm-text { font-size: 12px; font-weight: 700; min-width: 65px; text-align: center; color: var(--primary); }
+
+.rsvp-shortcuts-hint {
+  padding: 10px 20px;
+  font-size: 11px;
+  color: var(--text-muted);
+  text-align: center;
+  background: var(--btn-bg);
+  border-top: 1px solid var(--border-color);
+}
+.rsvp-shortcuts-hint b { color: var(--text-main); }
+

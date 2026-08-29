@@ -81,6 +81,11 @@
         <button id="fontSizeIncBtn" class="control-btn" title="Increase font size">A+</button>
       </div>
 
+      <!-- Speed Reading RSVP Button -->
+      <button id="rsvpToggleBtn" class="control-btn rsvp-btn" title="RSVP Speed Reading Mode (V)">
+        <span>🎯 Speed Read</span>
+      </button>
+
       <!-- Theme Switcher -->
       <div class="theme-picker">
         <button class="theme-btn active" data-theme="dark" title="Dark Theme">🌙</button>
@@ -224,6 +229,15 @@
       ‹
     </button>
 
+    <!-- Speed Reading Target Action Bar (Phase 1) -->
+    <div id="speedTargetBar" class="speed-target-bar" style="display: none;">
+      <span class="speed-target-hint">🎯 Click any word on the page to set start point</span>
+      <div class="speed-target-actions">
+        <button id="speedStartBtn" class="primary-btn speed-start-btn" title="Start Speed Reading (Space)">▶ Start (Space)</button>
+        <button id="speedExitBtn" class="control-btn speed-exit-btn" title="Exit Speed Reading Mode (Esc)">✕ Exit</button>
+      </div>
+    </div>
+
     <!-- EPUB Render Area -->
     <div id="viewerArea" class="viewer-area" style="display: none;"></div>
 
@@ -247,6 +261,48 @@
       <button id="jumpLocationBtn" class="jump-btn" title="Jump to exact percentage">Jump %</button>
     </div>
   </footer>
+
+  <!-- RSVP Speed Pacer Modal -->
+  <div id="rsvpModal" class="rsvp-modal" style="display: none;">
+    <div class="rsvp-dialog">
+      <div class="rsvp-header">
+        <div class="rsvp-header-left">
+          <span class="rsvp-icon">🎯</span>
+          <span class="rsvp-title">RSVP Speed Pacer</span>
+        </div>
+        <div class="rsvp-header-right">
+          <span id="rsvpProgressText" class="rsvp-progress-text">Word 0 / 0</span>
+          <button id="closeRsvpBtn" class="icon-btn" title="Close (Esc)">✕</button>
+        </div>
+      </div>
+
+      <!-- Focal Stage -->
+      <div class="rsvp-stage">
+        <div class="rsvp-crosshair rsvp-crosshair-top"></div>
+        <div class="rsvp-display-box">
+          <span id="rsvpWordLeft" class="rsvp-part rsvp-left"></span><span id="rsvpWordOrp" class="rsvp-part rsvp-orp">R</span><span id="rsvpWordRight" class="rsvp-part rsvp-right">eady</span>
+        </div>
+        <div class="rsvp-crosshair rsvp-crosshair-bottom"></div>
+      </div>
+
+      <!-- Controls -->
+      <div class="rsvp-controls">
+        <button id="rsvpBackBtn" class="control-btn" title="Rewind 10 words (←)">⏪ -10</button>
+        <button id="rsvpPlayBtn" class="rsvp-play-btn" title="Play / Pause (Space)">▶ Play</button>
+        <button id="rsvpFwdBtn" class="control-btn" title="Forward 10 words (→)">+10 ⏩</button>
+
+        <div class="rsvp-speed-group">
+          <span class="rsvp-speed-label">Speed:</span>
+          <button id="rsvpSpeedDec" class="control-btn" title="Decrease WPM (-)">−</button>
+          <span id="rsvpWpmDisplay" class="rsvp-wpm-text">350 WPM</span>
+          <button id="rsvpSpeedInc" class="control-btn" title="Increase WPM (+)">+</button>
+        </div>
+      </div>
+      <div class="rsvp-shortcuts-hint">
+        <span><b>Space:</b> Play/Pause</span> • <span><b>↑/↓</b> or <b>+/−:</b> Speed</span> • <span><b>←/→:</b> Skip ±10</span> • <span><b>P:</b> Auto-Pace Ruler</span> • <span><b>Esc:</b> Exit</span>
+      </div>
+    </div>
+  </div>
 
   <script src="app.js"></script>
 </body>

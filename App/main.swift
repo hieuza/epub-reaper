@@ -61,7 +61,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNa
         window.title = "EPUB Reaper"
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
-        window.isMovableByWindowBackground = true
+        window.isMovableByWindowBackground = false
         window.minSize = NSSize(width: 820, height: 560)
         window.backgroundColor = NSColor(red: 9/255.0, green: 13/255.0, blue: 22/255.0, alpha: 1.0)
 
@@ -69,6 +69,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNa
         let config = WKWebViewConfiguration()
         let userContent = WKUserContentController()
         userContent.add(self, name: "openFileDialog")
+        userContent.add(self, name: "logHandler")
         config.userContentController = userContent
         config.preferences.setValue(true, forKey: "allowFileAccessFromFileURLs")
         config.setValue(true, forKey: "allowUniversalAccessFromFileURLs")
@@ -133,6 +134,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNa
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
         if message.name == "openFileDialog" {
             showNativeOpenDialog()
+        } else if message.name == "logHandler", let body = message.body as? String {
+            print(body)
+            fflush(stdout)
         }
     }
 
@@ -219,7 +223,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNa
         viewMenuItem.submenu = viewMenu
         mainMenu.addItem(viewMenuItem)
 
-        // 4. Window Menu
+        // 4. Speed Reading Menu
+        let speedMenuItem = NSMenuItem()
+        let speedMenu = NSMenu(title: "Speed Reading")
+        speedMenu.addItem(withTitle: "RSVP Speed Pacer...", action: #selector(menuActionOpenRsvp), keyEquivalent: "v")
+        speedMenuItem.submenu = speedMenu
+        mainMenu.addItem(speedMenuItem)
+
+        // 5. Window Menu
         let windowMenuItem = NSMenuItem()
         let windowMenu = NSMenu(title: "Window")
         windowMenu.addItem(withTitle: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
@@ -244,6 +255,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNa
 
     @objc func menuActionZoomOut() {
         webView?.evaluateJavaScript("window.triggerAction('zoom-out')", completionHandler: nil)
+    }
+
+    @objc func menuActionOpenRsvp() {
+        webView?.evaluateJavaScript("window.triggerAction('open-rsvp')", completionHandler: nil)
     }
 }
 
