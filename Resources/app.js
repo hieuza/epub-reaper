@@ -309,6 +309,8 @@
     favoritesToggleBtn?.addEventListener('click', () => { toggleDrawer(favoritesSidebar); renderFavorites(); });
     closeFavoritesBtn?.addEventListener('click', closeDrawers);
     sidebarOverlay?.addEventListener('click', closeDrawers);
+    progressSlider?.addEventListener('input', onScrub);
+    progressSlider?.addEventListener('change', onScrubEnd);
     jumpBtn?.addEventListener('click', jumpPct);
 
     window.addEventListener('dragover', (e) => { e.preventDefault(); dropZone?.classList.add('drag-over'); });
@@ -1612,10 +1614,20 @@
   function updateProgress() {
     if (!rendition || isScrubbing) return;
     const loc = rendition.currentLocation();
-    if (!loc?.start?.cfi || !book?.locations?.length()) return;
-    const pct = book.locations.percentageFromCfi(loc.start.cfi);
-    if (pct !== null && !isNaN(pct)) {
-      const rounded = Math.round(pct * 100);
+    if (!loc?.start?.cfi) return;
+    let rounded = null;
+    if (book?.locations?.length()) {
+      const pct = book.locations.percentageFromCfi(loc.start.cfi);
+      if (pct !== null && !isNaN(pct)) {
+        rounded = Math.round(pct * 100);
+      }
+    } else if (book?.spine?.spineItems?.length && loc.start.href) {
+      const idx = book.spine.spineItems.findIndex((s) => s.href === loc.start.href || loc.start.href.includes(s.href));
+      if (idx !== -1) {
+        rounded = Math.round((idx / book.spine.spineItems.length) * 100);
+      }
+    }
+    if (rounded !== null) {
       progressSlider && (progressSlider.value = rounded);
       progressPercentage && (progressPercentage.textContent = rounded + '%');
     }
@@ -1637,9 +1649,22 @@
     }
   }
   function goToPercentage(pct) {
-    if (!book?.locations?.length()) return;
-    const cfi = book.locations.cfiFromPercentage(pct / 100);
-    if (cfi) rendition?.display(cfi);
+    if (!book || !rendition) return;
+    pct = Math.max(0, Math.min(100, pct));
+    if (book.locations?.length()) {
+      const cfi = book.locations.cfiFromPercentage(pct / 100);
+      if (cfi) {
+        rendition.display(cfi);
+        return;
+      }
+    }
+    if (book.spine?.spineItems?.length) {
+      const idx = Math.min(book.spine.spineItems.length - 1, Math.floor((pct / 100) * book.spine.spineItems.length));
+      const section = book.spine.spineItems[idx];
+      if (section?.href) {
+        rendition.display(section.href);
+      }
+    }
   }
 
   // ── Table of Contents ─────────────────────────────────────────────────
