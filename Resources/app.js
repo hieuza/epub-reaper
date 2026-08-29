@@ -489,13 +489,19 @@
     items.forEach((it) => {
       const el = document.createElement('div');
       el.className = 'history-item';
-      el.innerHTML = `<span class="history-title">${esc(it.title || it.name)}</span>`;
+      el.innerHTML = `<span class="history-title">${esc(it.title || it.name)}</span><button class="history-item-del" title="Remove from history">✕</button>`;
       el.addEventListener('click', async () => {
         const record = await DB.get(it.name);
         if (record?.buffer) {
           closeDrawers();
           openBook(record.buffer, record.name, false);
         }
+      });
+      el.querySelector('.history-item-del').addEventListener('click', async (ev) => {
+        ev.stopPropagation();
+        await DB.del(it.name);
+        renderHistory();
+        renderRecentList();
       });
       frag.appendChild(el);
     });
