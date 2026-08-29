@@ -292,8 +292,8 @@
     welcomeOpenBtn?.addEventListener('click', requestOpenFile);
     fileInput?.addEventListener('change', onFile);
 
-    prevBtn?.addEventListener('click', () => rendition?.prev());
-    nextBtn?.addEventListener('click',  () => rendition?.next());
+    prevBtn?.addEventListener('click', pagePrev);
+    nextBtn?.addEventListener('click', pageNext);
     tocToggleBtn?.addEventListener('click', () => toggleDrawer(tocSidebar));
     closeTocBtn?.addEventListener('click', closeDrawers);
     tocFilterInput?.addEventListener('input', filterToc);
@@ -319,7 +319,6 @@
       if (e.dataTransfer?.files.length) loadFile(e.dataTransfer.files[0]);
     });
     window.addEventListener('keydown', onKey, true);
-    document.addEventListener('keydown', onKey, true);
     makeDraggable(speedTargetBar);
 
     let resizeTimer;
@@ -384,7 +383,27 @@
     }
   }
 
+  let lastPageTurnTime = 0;
+  const PAGE_TURN_DEBOUNCE_MS = 120;
+
+  function pagePrev() {
+    const now = Date.now();
+    if (now - lastPageTurnTime < PAGE_TURN_DEBOUNCE_MS) return;
+    lastPageTurnTime = now;
+    rendition?.prev();
+  }
+
+  function pageNext() {
+    const now = Date.now();
+    if (now - lastPageTurnTime < PAGE_TURN_DEBOUNCE_MS) return;
+    lastPageTurnTime = now;
+    rendition?.next();
+  }
+
   function onKey(e) {
+    if (!e || e._handledByEpubReaper || e.defaultPrevented) return;
+    e._handledByEpubReaper = true;
+
     if (e.key === 'Escape') {
       if (isRsvpOpen) { closeRsvp(); e.preventDefault(); return; }
       if (isSpeedTargeting) { exitSpeedTargetingMode(); e.preventDefault(); return; }
@@ -428,8 +447,8 @@
     }
 
     if (!rendition) return;
-    if (e.key === 'ArrowLeft'  || e.key === 'PageUp')   { rendition.prev(); e.preventDefault(); }
-    if (e.key === 'ArrowRight' || e.key === 'PageDown' || e.key === ' ') { rendition.next(); e.preventDefault(); }
+    if (e.key === 'ArrowLeft'  || e.key === 'PageUp')   { e.preventDefault(); pagePrev(); return; }
+    if (e.key === 'ArrowRight' || e.key === 'PageDown' || e.key === ' ') { e.preventDefault(); pageNext(); return; }
   }
 
   function toggleDrawer(d) {
@@ -729,7 +748,6 @@
     rendition.hooks.content.register((contents) => {
       attachContentsListeners(contents);
     });
-    rendition.on('keydown', onKey);
 
     let cfi;
     if (typeof target === 'string') {
@@ -1037,7 +1055,6 @@
     doc.addEventListener('click', handleInteraction, true);
     doc.addEventListener('mouseup', handleInteraction, true);
     doc.addEventListener('keydown', onKey, true);
-    if (win) win.addEventListener('keydown', onKey, true);
   }
 
   // ── 2-Phase Speed Reading Engine ──────────────────────────────────────────
