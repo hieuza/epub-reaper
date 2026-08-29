@@ -200,10 +200,27 @@
         });
       } catch { return null; }
     },
+    async touch(name) {
+      try {
+        const db = await this._open();
+        const tx = db.transaction('books', 'readwrite');
+        const store = tx.objectStore('books');
+        const req = store.get(name);
+        req.onsuccess = () => {
+          if (req.result) {
+            req.result.ts = Date.now();
+            store.put(req.result);
+          }
+        };
+      } catch(e) {}
+    },
     async del(name) {
       try {
         const db = await this._open();
         db.transaction('books', 'readwrite').objectStore('books').delete(name);
+        S.get('epubrex_last_book', (last) => {
+          if (last === name) S.set('epubrex_last_book', null);
+        });
       } catch(e) {}
     }
   };
@@ -226,13 +243,22 @@
     bindEvents();
 
     try {
-      const recent = await DB.list();
-      if (!currentFileName && recent?.length && recent[0].name) {
-        const rec = await DB.get(recent[0].name);
-        if (!currentFileName && rec?.buffer) {
-          logApp('Auto-loading most recent book:', rec.name);
-          openBook(rec.buffer, rec.name, false);
+      let targetBookName = null;
+      await new Promise((ok) => {
+        S.get('epubrex_last_book', (b) => { targetBookName = b; ok(); });
+      });
+
+      let rec = targetBookName ? await DB.get(targetBookName) : null;
+      if (!rec) {
+        const recent = await DB.list();
+        if (recent?.length && recent[0].name) {
+          rec = await DB.get(recent[0].name);
         }
+      }
+
+      if (!currentFileName && rec?.buffer) {
+        logApp('Auto-loading last book:', rec.name);
+        openBook(rec.buffer, rec.name, false);
       }
     } catch(e) {}
 
@@ -574,6 +600,7 @@
 
     currentFileName = fileName;
     currentBookTitle = fileName;
+    S.set('epubrex_last_book', fileName);
     updateFavoriteButtonState();
 
     bookKey = 'epubrex_pos_' + fileName.replace(/\s+/g, '_');
@@ -587,8 +614,13 @@
       bookTitleEl && (bookTitleEl.textContent = m.title || fileName);
       bookAuthorEl && (bookAuthorEl.textContent = m.creator ? 'by ' + m.creator : 'Unknown Author');
       document.title = (m.title || fileName) + ' – EPUB Reaper';
-      if (saveToRecent) DB.save(fileName, m.title || fileName, data);
+      if (saveToRecent) {
+        DB.save(fileName, m.title || fileName, data);
+      } else {
+        DB.touch(fileName);
+      }
       updateFavoriteButtonState();
+      renderRecentList();
     });
     book.loaded.navigation.then((nav) => { tocItems = nav.toc || []; buildToc(tocItems); });
     book.ready.then(() => book.locations.generate(1024)).then(() => updateProgress());
@@ -681,6 +713,7 @@
     rendition.on('relocated', (loc) => {
       if (!loc?.start) return;
       S.set(bookKey, loc.start.cfi);
+      if (currentFileName) S.set('epubrex_last_book', currentFileName);
       updateProgress();
       updateChapter(loc.start.href);
     });
