@@ -1024,37 +1024,42 @@
       (doc.head || doc.body || doc.documentElement).appendChild(style);
     } catch(e) {}
 
-    function handleInteraction(e) {
-      if (isRsvpOpen) return;
+    function handleLinkClick(e) {
+      if (isSpeedTargeting || isRsvpOpen) return;
+      const a = e.target.closest('a');
+      if (!a) return;
 
-      if (!rsvpWords.length) rsvpWords = extractSectionWords();
+      const rawHref = a.getAttribute('href') || a.getAttributeNS('http://www.w3.org/1999/xlink', 'href');
+      if (!rawHref || rawHref === '#' || rawHref.startsWith('javascript:')) return;
 
-      // Drag selection
-      const sel = win?.getSelection?.() || doc?.getSelection?.();
-      if (sel && !sel.isCollapsed && sel.toString().trim().length > 0) {
-        const selIdx = findWordFromRangeOrSelection(doc, sel);
-        if (selIdx !== -1) {
-          targetedWordIndex = selIdx;
-          lastResumeWordIndex = selIdx;
-          lastResumePageScroll = rendition?.manager?.container?.scrollLeft || 0;
-          if (isSpeedTargeting) highlightResumeWord(rsvpWords[selIdx], false);
-          return;
-        }
+      e.preventDefault();
+      e.stopPropagation();
+
+      if (/^(https?:\/\/|mailto:)/i.test(rawHref)) {
+        window.open(rawHref, '_blank');
+        return;
       }
 
-      // Single click
-      if (typeof e.clientX === 'number' && typeof e.clientY === 'number') {
-        const clickedIdx = findWordAtPoint(doc, e.clientX, e.clientY);
-        if (clickedIdx !== -1) {
-          targetedWordIndex = clickedIdx;
-          lastResumeWordIndex = clickedIdx;
-          lastResumePageScroll = rendition?.manager?.container?.scrollLeft || 0;
-          if (isSpeedTargeting) highlightResumeWord(rsvpWords[clickedIdx], false);
-        }
+      let targetHref;
+      if (rawHref.startsWith('#')) {
+        const curLoc = rendition?.currentLocation();
+        const curHref = curLoc?.start?.href || '';
+        const baseHref = curHref.split('#')[0];
+        targetHref = baseHref ? (baseHref + rawHref) : rawHref;
+      } else {
+        targetHref = resolveTocHref(rawHref);
+      }
+
+      if (targetHref && rendition) {
+        closeDrawers();
+        rendition.display(targetHref);
       }
     }
 
-    doc.addEventListener('click', handleInteraction, true);
+    doc.addEventListener('click', (e) => {
+      handleLinkClick(e);
+      handleInteraction(e);
+    }, true);
     doc.addEventListener('mouseup', handleInteraction, true);
     doc.addEventListener('keydown', onKey, true);
   }
@@ -1670,16 +1675,17 @@
   // ── Table of Contents ─────────────────────────────────────────────────
   function resolveTocHref(href) {
     if (!href || !book?.spine) return href;
+    const hash = href.includes('#') ? '#' + href.split('#').slice(1).join('#') : '';
     const clean = href.split('#')[0].split('?')[0];
-    if (book.spine.get(clean)) return href;
+    if (book.spine.get(clean)) return clean + hash;
     const normalized = clean.replace(/^(?:\.\.\/)+/, '');
     if (book.spine.get(normalized)) {
-      return href.replace(clean, normalized);
+      return normalized + hash;
     }
     const filename = clean.split('/').pop();
     for (const item of book.spine.spineItems) {
       if (item.href && item.href.split('/').pop() === filename) {
-        return href.replace(clean, item.href);
+        return item.href + hash;
       }
     }
     return href;
