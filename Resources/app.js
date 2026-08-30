@@ -73,6 +73,11 @@
   const welcomeOpenBtn    = byId('welcomeOpenBtn');
   const progressSlider    = byId('progressSlider');
   const jumpBtn           = byId('jumpLocationBtn');
+  const scrubberWrapper   = byId('scrubberWrapper');
+  const chapterMarkers    = byId('chapterMarkers');
+  const scrubberTooltip   = byId('scrubberTooltip');
+  const tooltipChapterTitle = byId('tooltipChapterTitle');
+  const tooltipPercentage = byId('tooltipPercentage');
   const rsvpToggleBtn      = byId('rsvpToggleBtn');
   const speedTargetBar     = byId('speedTargetBar');
   const speedStartBtn      = byId('speedStartBtn');
@@ -322,6 +327,7 @@
     });
     window.addEventListener('keydown', onKey, true);
     makeDraggable(speedTargetBar);
+    initScrubberTooltip();
 
     let resizeTimer;
     window.addEventListener('resize', () => {
@@ -649,8 +655,15 @@
       updateFavoriteButtonState();
       renderRecentList();
     });
-    book.loaded.navigation.then((nav) => { tocItems = nav.toc || []; buildToc(tocItems); });
-    book.ready.then(() => book.locations.generate(1024)).then(() => updateProgress());
+    book.loaded.navigation.then((nav) => {
+      tocItems = nav.toc || [];
+      buildToc(tocItems);
+      buildChapterMarkers(tocItems);
+    });
+    book.ready.then(() => book.locations.generate(1024)).then(() => {
+      updateProgress();
+      buildChapterMarkers(tocItems);
+    });
   }
 
   // ── Rendition (re-)creation ───────────────────────────────────────────
@@ -1728,6 +1741,131 @@
     if (match && currentChapterName) {
       currentChapterName.textContent = match.label.trim();
     }
+  }
+
+  // ── Scrubber Chapter Markers & Tooltips ────────────────────────────────
+  let chapterPositions = [];
+
+  function flattenToc(items, result = []) {
+    if (!items || !items.length) return result;
+    items.forEach((item) => {
+      if (item.href && item.label) {
+        result.push({ label: item.label.trim(), href: item.href });
+      }
+      if (item.subitems && item.subitems.length) {
+        flattenToc(item.subitems, result);
+      }
+    });
+    return result;
+  }
+
+  function buildChapterMarkers(items) {
+    if (!chapterMarkers || !book) return;
+    chapterMarkers.innerHTML = '';
+    chapterPositions = [];
+
+    const flat = flattenToc(items);
+    if (!flat.length && book.spine?.spineItems?.length) {
+      book.spine.spineItems.forEach((sp, idx) => {
+        flat.push({
+          label: `Section ${idx + 1}`,
+          href: sp.href
+        });
+      });
+    }
+
+    if (!flat.length) return;
+
+    const addedKeys = new Set();
+
+    flat.forEach((it) => {
+      let pct = null;
+      const targetHref = resolveTocHref(it.href);
+      const cleanHref = targetHref.split('#')[0];
+
+      if (book.locations?.length()) {
+        try {
+          const section = book.spine.get(cleanHref);
+          const cfi = section?.cfi;
+          if (cfi) {
+            pct = book.locations.percentageFromCfi(cfi);
+          }
+        } catch(e) {}
+      }
+
+      if ((pct === null || isNaN(pct)) && book.spine?.spineItems?.length) {
+        const idx = book.spine.spineItems.findIndex((s) => s.href === cleanHref || cleanHref.endsWith(s.href) || s.href.endsWith(cleanHref));
+        if (idx !== -1) {
+          pct = idx / book.spine.spineItems.length;
+        }
+      }
+
+      if (pct !== null && !isNaN(pct)) {
+        const roundedPct = Math.round(pct * 100);
+        const markerKey = roundedPct + '_' + cleanHref;
+        if (addedKeys.has(markerKey)) return;
+        addedKeys.add(markerKey);
+
+        const marker = document.createElement('div');
+        marker.className = 'chapter-marker';
+        marker.style.left = (pct * 100) + '%';
+        marker.title = it.label + ' (' + roundedPct + '%)';
+
+        marker.addEventListener('click', (e) => {
+          e.stopPropagation();
+          e.preventDefault();
+          closeDrawers();
+          rendition?.display(resolveTocHref(it.href));
+        });
+
+        chapterMarkers.appendChild(marker);
+        chapterPositions.push({
+          title: it.label,
+          href: it.href,
+          pct: roundedPct,
+          ratio: pct,
+          markerEl: marker
+        });
+      }
+    });
+
+    chapterPositions.sort((a, b) => a.ratio - b.ratio);
+  }
+
+  function initScrubberTooltip() {
+    if (!scrubberWrapper || !scrubberTooltip) return;
+
+    scrubberWrapper.addEventListener('mousemove', (e) => {
+      const rect = scrubberWrapper.getBoundingClientRect();
+      if (!rect.width) return;
+      const mouseX = Math.max(0, Math.min(rect.width, e.clientX - rect.left));
+      const hoverRatio = mouseX / rect.width;
+      const hoverPct = Math.round(hoverRatio * 100);
+
+      let activeChapter = null;
+      if (chapterPositions.length) {
+        for (let i = 0; i < chapterPositions.length; i++) {
+          if (hoverRatio >= chapterPositions[i].ratio - 0.015) {
+            activeChapter = chapterPositions[i];
+          } else {
+            break;
+          }
+        }
+        if (!activeChapter) activeChapter = chapterPositions[0];
+      }
+
+      const title = activeChapter ? activeChapter.title : (currentChapterName?.textContent || 'Chapter');
+      if (tooltipChapterTitle) tooltipChapterTitle.textContent = title;
+      if (tooltipPercentage) tooltipPercentage.textContent = hoverPct + '%';
+
+      const tooltipLeft = Math.max(70, Math.min(rect.width - 70, mouseX));
+      scrubberTooltip.style.left = tooltipLeft + 'px';
+      scrubberTooltip.style.display = 'flex';
+    });
+
+    scrubberWrapper.addEventListener('mouseleave', () => {
+      if (scrubberTooltip) scrubberTooltip.style.display = 'none';
+    });
   }
 
   // ── Bookmarks ──────────────────────────────────────────────────────────

@@ -253,7 +253,14 @@
     </div>
 
     <div class="scrubber-center">
-      <input type="range" id="progressSlider" class="progress-slider" min="0" max="100" step="1" value="0" title="Drag to jump to location">
+      <div id="scrubberWrapper" class="scrubber-wrapper">
+        <div id="chapterMarkers" class="chapter-markers-container"></div>
+        <input type="range" id="progressSlider" class="progress-slider" min="0" max="100" step="1" value="0" title="Drag to jump to location">
+        <div id="scrubberTooltip" class="scrubber-tooltip" style="display: none;">
+          <span id="tooltipChapterTitle" class="tooltip-chapter-title"></span>
+          <span id="tooltipPercentage" class="tooltip-percentage"></span>
+        </div>
+      </div>
     </div>
 
     <div class="scrubber-right">
