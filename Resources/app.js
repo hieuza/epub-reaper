@@ -95,6 +95,14 @@
   const rsvpSpeedInc       = byId('rsvpSpeedInc');
   const rsvpWpmDisplay     = byId('rsvpWpmDisplay');
 
+  const footnoteModal      = byId('footnoteModal');
+  const footnoteBackdrop   = byId('footnoteBackdrop');
+  const footnoteTitle      = byId('footnoteTitle');
+  const footnoteBody       = byId('footnoteBody');
+  const closeFootnoteBtn   = byId('closeFootnoteBtn');
+  const footnoteJumpBtn    = byId('footnoteJumpBtn');
+
+  let isFootnoteOpen       = false;
   let isSpeedTargeting = false;
   let targetedWordIndex= 0;
   let isRsvpOpen       = false;
@@ -314,6 +322,8 @@
     favoritesToggleBtn?.addEventListener('click', () => { toggleDrawer(favoritesSidebar); renderFavorites(); });
     closeFavoritesBtn?.addEventListener('click', closeDrawers);
     sidebarOverlay?.addEventListener('click', closeDrawers);
+    closeFootnoteBtn?.addEventListener('click', closeFootnote);
+    footnoteBackdrop?.addEventListener('click', closeFootnote);
     progressSlider?.addEventListener('input', onScrub);
     progressSlider?.addEventListener('change', onScrubEnd);
     jumpBtn?.addEventListener('click', jumpPct);
@@ -413,6 +423,7 @@
     e._handledByEpubReaper = true;
 
     if (e.key === 'Escape') {
+      if (isFootnoteOpen) { closeFootnote(); e.preventDefault(); return; }
       if (isRsvpOpen) { closeRsvp(); e.preventDefault(); return; }
       if (isSpeedTargeting) { exitSpeedTargetingMode(); e.preventDefault(); return; }
       closeDrawers();
@@ -1017,6 +1028,98 @@
     return findWordAtDocCoordinates(doc, clientX + currentScroll, clientY);
   }
 
+  // ── Footnote Popup Engine ────────────────────────────────────────────────
+  function openFootnote() {
+    isFootnoteOpen = true;
+    if (footnoteModal) footnoteModal.style.display = 'flex';
+  }
+
+  function closeFootnote() {
+    if (!isFootnoteOpen) return;
+    isFootnoteOpen = false;
+    if (footnoteModal) footnoteModal.style.display = 'none';
+  }
+
+  function isFootnoteLink(a, rawHref) {
+    if (!a || !rawHref) return false;
+    const epubType = (a.getAttribute('epub:type') || '').toLowerCase();
+    const role = (a.getAttribute('role') || '').toLowerCase();
+    if (epubType.includes('noteref') || role.includes('doc-noteref') || role.includes('footnote')) return true;
+
+    if (a.closest('sup, sub') || a.querySelector('sup, sub')) return true;
+
+    const cls = (a.className || '').toLowerCase();
+    const id = (a.id || '').toLowerCase();
+    if (/footnote|noteref|note-ref|chuthich|chu-thich|annotation|comment-ref/i.test(cls + ' ' + id)) return true;
+
+    const text = a.textContent.trim();
+    if (/^[\(\[\{]?(?:\d+|[a-zA-Z]|\*|†|‡|§)[\)\]\}]?$/.test(text)) return true;
+
+    if (rawHref.includes('#')) {
+      const hash = rawHref.split('#')[1].toLowerCase();
+      if (/note|footnote|chuthich|chu_thich|chu-thich|annotation|comment|fn|nt|ftn|ct/i.test(hash)) return true;
+    }
+
+    return false;
+  }
+
+  async function showFootnotePopup(a, rawHref, doc) {
+    const hashId = rawHref.includes('#') ? rawHref.split('#')[1] : null;
+    const filePart = rawHref.split('#')[0];
+    let targetEl = null;
+
+    if (hashId && doc) {
+      targetEl = doc.getElementById(hashId) || doc.querySelector(`[name="${hashId}"]`) || doc.querySelector(`a[href*="${a.id || hashId}"]`);
+    }
+
+    if (!targetEl && filePart && book?.spine) {
+      try {
+        const targetHref = resolveTocHref(filePart);
+        const section = book.spine.get(targetHref);
+        if (section) {
+          const sectionDoc = await section.load(book.load.bind(book));
+          if (sectionDoc) {
+            targetEl = (hashId ? (sectionDoc.getElementById(hashId) || sectionDoc.querySelector(`[name="${hashId}"]`)) : null) || sectionDoc.body;
+          }
+        }
+      } catch(err) {}
+    }
+
+    let contentHtml = '';
+    let titleText = 'Chú thích';
+    const linkText = a.textContent.trim();
+    if (linkText) {
+      titleText = `Chú thích ${linkText}`;
+    }
+
+    if (targetEl) {
+      const container = targetEl.closest('aside, li, dd, p, div, blockquote, tr, section') || targetEl;
+      const clone = container.cloneNode(true);
+      clone.querySelectorAll('a[href^="#"], .backlink, .footnote-backref, .epub-back-arrow').forEach((el) => {
+        if (/^[↩\^↑back\s]+$/i.test(el.textContent.trim()) || el.getAttribute('role') === 'doc-backlink') {
+          el.remove();
+        }
+      });
+      contentHtml = clone.innerHTML.trim();
+    }
+
+    if (!contentHtml && hashId) {
+      contentHtml = `<p><em>(Không tìm thấy nội dung chi tiết cho chú thích <b>${hashId}</b>)</em></p>`;
+    }
+
+    if (footnoteTitle) footnoteTitle.textContent = titleText;
+    if (footnoteBody) footnoteBody.innerHTML = contentHtml;
+    if (footnoteJumpBtn) {
+      footnoteJumpBtn.onclick = () => {
+        closeFootnote();
+        const resolved = resolveTocHref(rawHref);
+        rendition?.display(resolved);
+      };
+    }
+
+    openFootnote();
+  }
+
   function attachContentsListeners(contents) {
     if (!contents) return;
     const doc = contents.document;
@@ -1037,7 +1140,7 @@
       (doc.head || doc.body || doc.documentElement).appendChild(style);
     } catch(e) {}
 
-    function handleLinkClick(e) {
+    async function handleLinkClick(e) {
       if (isSpeedTargeting || isRsvpOpen) return;
       const a = e.target.closest('a');
       if (!a) return;
@@ -1050,6 +1153,11 @@
 
       if (/^(https?:\/\/|mailto:)/i.test(rawHref)) {
         window.open(rawHref, '_blank');
+        return;
+      }
+
+      if (isFootnoteLink(a, rawHref)) {
+        await showFootnotePopup(a, rawHref, doc);
         return;
       }
 
