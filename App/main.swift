@@ -1,4 +1,5 @@
 import Cocoa
+import UniformTypeIdentifiers
 import WebKit
 
 class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavigationDelegate {
@@ -6,6 +7,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNa
     var webView: WKWebView!
     var pendingFiles: [URL] = []
     var isWebReady = false
+    private var fileLoadGeneration = 0
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupMenu()
@@ -73,7 +75,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNa
         config.userContentController = userContent
         config.preferences.setValue(true, forKey: "allowFileAccessFromFileURLs")
         config.setValue(true, forKey: "allowUniversalAccessFromFileURLs")
-        config.preferences.setValue(true, forKey: "developerExtrasEnabled")
 
         webView = WKWebView(frame: window.contentView!.bounds, configuration: config)
         webView.autoresizingMask = [.width, .height]
@@ -106,6 +107,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNa
         let devDir = devURL.deletingLastPathComponent()
         if FileManager.default.fileExists(atPath: devURL.path) {
             webView.loadFileURL(devURL, allowingReadAccessTo: devDir)
+        } else {
+            let alert = NSAlert()
+            alert.messageText = "EPUB Reaper could not start"
+            alert.informativeText = "The bundled reader resources are missing. Rebuild the application and try again."
+            alert.runModal()
+            NSApplication.shared.terminate(nil)
         }
     }
 
@@ -130,6 +137,19 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNa
         }
     }
 
+    func webView(
+        _ webView: WKWebView,
+        decidePolicyFor navigationAction: WKNavigationAction,
+        decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
+    ) {
+        if let scheme = navigationAction.request.url?.scheme?.lowercased(),
+           ["http", "https", "mailto"].contains(scheme) {
+            decisionHandler(.cancel)
+            return
+        }
+        decisionHandler(.allow)
+    }
+
     // ── WKScriptMessageHandler ───────────────────────────────────────────────
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
         if message.name == "openFileDialog" {
@@ -143,7 +163,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNa
     // ── Native File Operations ───────────────────────────────────────────────
     @objc func showNativeOpenDialog() {
         let panel = NSOpenPanel()
-        panel.allowedFileTypes = ["epub"]
+        if let epubType = UTType(filenameExtension: "epub") {
+            panel.allowedContentTypes = [epubType]
+        }
         panel.allowsMultipleSelection = false
         panel.canChooseDirectories = false
         panel.canChooseFiles = true
@@ -158,21 +180,34 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNa
     }
 
     func openEpubFile(at url: URL) {
-        guard let data = try? Data(contentsOf: url) else {
-            let alert = NSAlert()
-            alert.messageText = "Unable to read EPUB file"
-            alert.informativeText = "Could not open \(url.lastPathComponent)"
-            alert.runModal()
-            return
-        }
+        fileLoadGeneration += 1
+        let generation = fileLoadGeneration
 
-        let base64 = data.base64EncodedString()
-        let filename = url.lastPathComponent.replacingOccurrences(of: "\"", with: "\\\"")
-        let script = "window.openBookFromBase64(\"\(base64)\", \"\(filename)\");"
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            do {
+                let data = try Data(contentsOf: url, options: .mappedIfSafe)
+                let base64 = data.base64EncodedString()
+                let arguments = [base64, url.lastPathComponent]
+                let jsonData = try JSONSerialization.data(withJSONObject: arguments)
+                guard let json = String(data: jsonData, encoding: .utf8) else { return }
 
-        webView.evaluateJavaScript(script) { _, error in
-            if let error = error {
-                NSLog("[EPUB Reaper] JS Evaluation error: %@", error.localizedDescription)
+                DispatchQueue.main.async {
+                    guard let self, generation == self.fileLoadGeneration else { return }
+                    let script = "window.openBookFromBase64(...\(json));"
+                    self.webView.evaluateJavaScript(script) { _, error in
+                        if let error {
+                            NSLog("[EPUB Reaper] JS Evaluation error: %@", error.localizedDescription)
+                        }
+                    }
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    guard let self, generation == self.fileLoadGeneration else { return }
+                    let alert = NSAlert()
+                    alert.messageText = "Unable to read EPUB file"
+                    alert.informativeText = "Could not open \(url.lastPathComponent): \(error.localizedDescription)"
+                    alert.beginSheetModal(for: self.window)
+                }
             }
         }
     }

@@ -12,22 +12,36 @@ APP_BUNDLE="$BUILD_DIR/$APP_NAME.app"
 CONTENTS="$APP_BUNDLE/Contents"
 MACOS_DIR="$CONTENTS/MacOS"
 RESOURCES_DIR="$CONTENTS/Resources"
+MODULE_CACHE_DIR="$BUILD_DIR/module-cache"
+TARGET_ARCH="${EPUB_REAPER_ARCH:-$(uname -m)}"
+
+case "$TARGET_ARCH" in
+  arm64|x86_64) ;;
+  *) echo "Unsupported build architecture: $TARGET_ARCH" >&2; exit 1 ;;
+esac
+
+# CLT updates can briefly leave the default SDK and Swift compiler out of sync.
+# The app targets macOS 12, so prefer the installed macOS 15.4 SDK when present;
+# callers can override this choice with EPUB_REAPER_SDK.
+if [ -n "${EPUB_REAPER_SDK:-}" ]; then
+  SDK_PATH="$EPUB_REAPER_SDK"
+elif [ -d "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk" ]; then
+  SDK_PATH="/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk"
+else
+  SDK_PATH="$(xcrun --show-sdk-path)"
+fi
 
 echo "🦖 Building $APP_NAME for macOS..."
 
 # 1. Clean previous build
 rm -rf "$BUILD_DIR"
-mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
+mkdir -p "$MACOS_DIR" "$RESOURCES_DIR" "$MODULE_CACHE_DIR"
 
 # 2. Compile Swift binary
 echo "  [1/4] Compiling Swift source..."
-swiftc -O \
-  -target arm64-apple-macos12.0 \
-  -sdk "$(xcrun --show-sdk-path)" \
-  "$SCRIPT_DIR/App/main.swift" \
-  -o "$MACOS_DIR/$APP_NAME" \
-  2>/dev/null || \
-swiftc -O \
+CLANG_MODULE_CACHE_PATH="$MODULE_CACHE_DIR" swiftc -O \
+  -target "$TARGET_ARCH-apple-macos12.0" \
+  -sdk "$SDK_PATH" \
   "$SCRIPT_DIR/App/main.swift" \
   -o "$MACOS_DIR/$APP_NAME"
 
@@ -44,9 +58,10 @@ cp -R "$SCRIPT_DIR/Resources/"* "$RESOURCES_DIR/"
 
 # 5. Ad-hoc codesign
 echo "  [4/4] Ad-hoc codesigning app bundle..."
-codesign --force --deep --sign - "$APP_BUNDLE" >/dev/null 2>&1 || true
+codesign --force --deep --sign - "$APP_BUNDLE" >/dev/null
 
 # 6. Copy final app to project root for easy access
+rm -rf "$SCRIPT_DIR/$APP_NAME.app"
 cp -R "$APP_BUNDLE" "$SCRIPT_DIR/"
 
 echo "✅ Build complete! App created at:"

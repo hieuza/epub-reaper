@@ -16,6 +16,8 @@
   let isScrubbing        = false;
   let currentFileName    = null;
   let currentBookTitle   = null;
+  let searchGeneration   = 0;
+  let bookLoadGeneration = 0;
 
   const FONT_STACK = '-apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif';
   const FAV_KEY = 'epubrex_favorites';
@@ -72,6 +74,8 @@
   const openFileBtn       = byId('openFileBtn');
   const welcomeOpenBtn    = byId('welcomeOpenBtn');
   const progressSlider    = byId('progressSlider');
+  const progressPercentage= byId('progressPercentage');
+  const currentChapterName= byId('currentChapterName');
   const jumpBtn           = byId('jumpLocationBtn');
   const scrubberWrapper   = byId('scrubberWrapper');
   const chapterMarkers    = byId('chapterMarkers');
@@ -141,6 +145,13 @@
   const MAX_RECENT = 10;
   const DB = {
     _conn: null,
+    _transactionDone(tx) {
+      return new Promise((resolve, reject) => {
+        tx.oncomplete = () => resolve();
+        tx.onabort = () => reject(tx.error || new Error('IndexedDB transaction aborted'));
+        tx.onerror = () => reject(tx.error || new Error('IndexedDB transaction failed'));
+      });
+    },
     async _open() {
       if (this._conn) return this._conn;
       return new Promise((ok, fail) => {
@@ -179,6 +190,7 @@
             store.delete(entries[i].name);
           }
         }
+        await this._transactionDone(tx);
       } catch(e) {}
     },
     async list() {
@@ -225,12 +237,15 @@
             store.put(req.result);
           }
         };
+        await this._transactionDone(tx);
       } catch(e) {}
     },
     async del(name) {
       try {
         const db = await this._open();
-        db.transaction('books', 'readwrite').objectStore('books').delete(name);
+        const tx = db.transaction('books', 'readwrite');
+        tx.objectStore('books').delete(name);
+        await this._transactionDone(tx);
         S.get('epubrex_last_book', (last) => {
           if (last === name) S.set('epubrex_last_book', null);
         });
@@ -243,13 +258,16 @@
     logApp('App initializing...');
     S.get('epubrex_theme', (t) => { if (t) applyTheme(t); });
     S.get('epubrex_font_size', (sz) => {
-      if (sz) { currentFontSize = sz; fontSizeDisplay && (fontSizeDisplay.textContent = sz + '%'); }
+      if (Number.isFinite(sz) && sz >= 60 && sz <= 200) {
+        currentFontSize = sz;
+        fontSizeDisplay && (fontSizeDisplay.textContent = sz + '%');
+      }
     });
     S.get('epubrex_spread', (sp) => {
-      if (sp) { currentSpread = sp; updateSpreadBtns(); }
+      if (['single', 'double'].includes(sp)) { currentSpread = sp; updateSpreadBtns(); }
     });
     S.get('epubrex_width', (w) => {
-      if (w) { currentColumnWidth = w; updateWidthBtns(); }
+      if ([580, 760, 960].includes(w)) { currentColumnWidth = w; updateWidthBtns(); }
     });
 
     renderRecentList();
@@ -295,7 +313,7 @@
     speedStartBtn?.addEventListener('click', (e) => { e.stopPropagation(); startRsvpPlayback(targetedWordIndex); });
     speedExitBtn?.addEventListener('click', (e) => { e.stopPropagation(); exitSpeedTargetingMode(); });
     closeRsvpBtn?.addEventListener('click', closeRsvp);
-    rsvpPlayBtn?.addEventListener('click', closeRsvp);
+    rsvpPlayBtn?.addEventListener('click', toggleRsvpPlayback);
     rsvpBackBtn?.addEventListener('click', () => stepRsvpWords(-10));
     rsvpFwdBtn?.addEventListener('click', () => stepRsvpWords(10));
     rsvpSpeedDec?.addEventListener('click', () => changeRsvpSpeed(-25));
@@ -336,17 +354,22 @@
       if (e.dataTransfer?.files.length) loadFile(e.dataTransfer.files[0]);
     });
     window.addEventListener('keydown', onKey, true);
+    window.addEventListener('beforeunload', persistCurrentPosition);
     makeDraggable(speedTargetBar);
     initScrubberTooltip();
 
     let resizeTimer;
+    let lastResizeKey = `${window.innerWidth}x${window.innerHeight}`;
     window.addEventListener('resize', () => {
       clearTimeout(resizeTimer);
       resizeTimer = setTimeout(() => {
         if (!rendition) return;
+        const resizeKey = `${window.innerWidth}x${window.innerHeight}`;
+        if (resizeKey === lastResizeKey) return;
+        lastResizeKey = resizeKey;
         const pos = capturePosition();
         createRendition(pos);
-      }, 200);
+      }, 300);
     });
   }
 
@@ -408,14 +431,20 @@
     const now = Date.now();
     if (now - lastPageTurnTime < PAGE_TURN_DEBOUNCE_MS) return;
     lastPageTurnTime = now;
-    rendition?.prev();
+    const activeRendition = rendition;
+    Promise.resolve(activeRendition?.prev()).then(() => {
+      if (rendition === activeRendition) requestAnimationFrame(persistCurrentPosition);
+    }).catch(() => {});
   }
 
   function pageNext() {
     const now = Date.now();
     if (now - lastPageTurnTime < PAGE_TURN_DEBOUNCE_MS) return;
     lastPageTurnTime = now;
-    rendition?.next();
+    const activeRendition = rendition;
+    Promise.resolve(activeRendition?.next()).then(() => {
+      if (rendition === activeRendition) requestAnimationFrame(persistCurrentPosition);
+    }).catch(() => {});
   }
 
   function onKey(e) {
@@ -432,9 +461,9 @@
     }
 
     if (isRsvpOpen) {
-      if (e.key === ' ' || e.key === 'Escape') {
+      if (e.key === ' ') {
         e.preventDefault();
-        closeRsvp();
+        toggleRsvpPlayback();
         return;
       }
       if (e.key === 'ArrowUp' || e.key === '+' || e.key === '=') { e.preventDefault(); changeRsvpSpeed(25); return; }
@@ -487,8 +516,14 @@
   function onFile(e) { if (e.target.files?.length) loadFile(e.target.files[0]); }
   function loadFile(f) {
     if (!f.name.toLowerCase().endsWith('.epub')) { alert('Select a .epub file.'); return; }
+    const generation = ++bookLoadGeneration;
     const r = new FileReader();
-    r.onload = (ev) => openBook(ev.target.result, f.name, true);
+    r.onload = (ev) => {
+      if (generation === bookLoadGeneration) openBook(ev.target.result, f.name, true);
+    };
+    r.onerror = () => {
+      if (generation === bookLoadGeneration) alert('Unable to read the selected EPUB file.');
+    };
     r.readAsArrayBuffer(f);
   }
 
@@ -504,8 +539,9 @@
       el.className = 'recent-item';
       el.innerHTML = `<span class="recent-item-title">${esc(it.title||it.name)}</span><button class="recent-item-del" title="Remove">✕</button>`;
       el.addEventListener('click', async () => {
+        const generation = ++bookLoadGeneration;
         const record = await DB.get(it.name);
-        if (record?.buffer) openBook(record.buffer, record.name, false);
+        if (generation === bookLoadGeneration && record?.buffer) openBook(record.buffer, record.name, false);
       });
       el.querySelector('.recent-item-del').addEventListener('click', async (ev) => {
         ev.stopPropagation(); await DB.del(it.name); renderRecentList();
@@ -529,8 +565,9 @@
       el.className = 'history-item';
       el.innerHTML = `<span class="history-title">${esc(it.title || it.name)}</span><button class="history-item-del" title="Remove from history">✕</button>`;
       el.addEventListener('click', async () => {
+        const generation = ++bookLoadGeneration;
         const record = await DB.get(it.name);
-        if (record?.buffer) {
+        if (generation === bookLoadGeneration && record?.buffer) {
           closeDrawers();
           openBook(record.buffer, record.name, false);
         }
@@ -600,8 +637,9 @@
         el.className = 'favorite-item';
         el.innerHTML = `<span class="favorite-item-title">${esc(it.title || it.name)}</span><button class="favorite-item-del" title="Remove from favorites">✕</button>`;
         el.addEventListener('click', async () => {
+          const generation = ++bookLoadGeneration;
           const record = await DB.get(it.name);
-          if (record?.buffer) {
+          if (generation === bookLoadGeneration && record?.buffer) {
             closeDrawers();
             openBook(record.buffer, record.name, false);
           }
@@ -632,7 +670,19 @@
 
   // ── Book loading ──────────────────────────────────────────────────────
   function openBook(data, fileName, saveToRecent) {
+    bookLoadGeneration++;
     logApp('openBook loading file:', fileName);
+    closeFootnote();
+    if (isRsvpOpen) closeRsvp();
+    if (isSpeedTargeting) exitSpeedTargetingMode();
+    pauseRsvp();
+    rsvpWords = [];
+    rsvpIndex = 0;
+    targetedWordIndex = 0;
+    lastResumeWordIndex = null;
+    lastResumePageScroll = null;
+    if (rendition) { try { rendition.destroy(); } catch(e){} }
+    rendition = null;
     if (book) { try { book.destroy(); } catch(e){} }
     if (!viewerArea) return;
 
@@ -641,6 +691,12 @@
     prevBtn && (prevBtn.style.display = 'flex');
     nextBtn && (nextBtn.style.display = 'flex');
     bottomBar && (bottomBar.style.display = 'flex');
+    if (progressSlider) {
+      progressSlider.disabled = true;
+      progressSlider.value = '0';
+    }
+    if (jumpBtn) jumpBtn.disabled = true;
+    if (progressPercentage) progressPercentage.textContent = '…';
 
     currentFileName = fileName;
     currentBookTitle = fileName;
@@ -649,31 +705,67 @@
 
     bookKey = 'epubrex_pos_' + fileName.replace(/\s+/g, '_');
     book = ePub(data);
+    const activeBook = book;
 
-    book.loaded.spine.then(fixSpineNavigation);
-    S.get(bookKey, (cfi) => createRendition(cfi || undefined));
+    activeBook.opened.catch((error) => {
+      if (book !== activeBook) return;
+      logApp('Could not open EPUB:', error?.message || error);
+      try { rendition?.destroy(); } catch(e) {}
+      try { activeBook.destroy(); } catch(e) {}
+      rendition = null;
+      book = null;
+      bookKey = null;
+      currentFileName = null;
+      currentBookTitle = null;
+      viewerArea.style.display = 'none';
+      prevBtn && (prevBtn.style.display = 'none');
+      nextBtn && (nextBtn.style.display = 'none');
+      bottomBar && (bottomBar.style.display = 'none');
+      dropZone && (dropZone.style.display = 'flex');
+      bookTitleEl && (bookTitleEl.textContent = 'EPUB Reaper');
+      bookAuthorEl && (bookAuthorEl.textContent = 'No book loaded');
+      alert('Unable to open this EPUB file. It may be damaged or unsupported.');
+    });
 
-    book.loaded.metadata.then((m) => {
+    book.loaded.spine.then((spine) => {
+      if (book === activeBook) fixSpineNavigation(spine);
+    }).catch((error) => logApp('Could not load EPUB spine:', error?.message || error));
+    S.get(bookKey, (cfi) => {
+      if (book === activeBook) createRendition(cfi || undefined);
+    });
+
+    book.loaded.metadata.then(async (m) => {
+      if (book !== activeBook) return;
       currentBookTitle = m.title || fileName;
       bookTitleEl && (bookTitleEl.textContent = m.title || fileName);
       bookAuthorEl && (bookAuthorEl.textContent = m.creator ? 'by ' + m.creator : 'Unknown Author');
       document.title = (m.title || fileName) + ' – EPUB Reaper';
       if (saveToRecent) {
-        DB.save(fileName, m.title || fileName, data);
+        await DB.save(fileName, m.title || fileName, data);
       } else {
-        DB.touch(fileName);
+        await DB.touch(fileName);
       }
+      if (book !== activeBook) return;
       updateFavoriteButtonState();
       renderRecentList();
-    });
+    }).catch((error) => logApp('Could not load EPUB metadata:', error?.message || error));
     book.loaded.navigation.then((nav) => {
+      if (book !== activeBook) return;
       tocItems = nav.toc || [];
       buildToc(tocItems);
-      buildChapterMarkers(tocItems);
-    });
-    book.ready.then(() => book.locations.generate(1024)).then(() => {
+      if (activeBook.locations?.length()) buildChapterMarkers(tocItems);
+    }).catch((error) => logApp('Could not load EPUB navigation:', error?.message || error));
+    activeBook.ready.then(() => {
+      if (book !== activeBook) return null;
+      return activeBook.locations.generate(1024);
+    }).then(() => {
+      if (book !== activeBook) return;
+      if (progressSlider) progressSlider.disabled = false;
+      if (jumpBtn) jumpBtn.disabled = false;
       updateProgress();
       buildChapterMarkers(tocItems);
+    }).catch((error) => {
+      if (book === activeBook) logApp('Could not generate EPUB locations:', error?.message || error);
     });
   }
 
@@ -696,8 +788,34 @@
     return { cfi, pct };
   }
 
+  function storedPosition(cfi, href = null) {
+    if (!cfi) return null;
+    let pct = null;
+    if (book?.locations?.length()) {
+      try { pct = book.locations.percentageFromCfi(cfi); } catch(e) {}
+    }
+    return { cfi, pct: Number.isFinite(pct) ? pct : null, href };
+  }
+
+  function persistCurrentPosition() {
+    if (!bookKey || !rendition) return;
+    const loc = rendition.currentLocation();
+    const position = storedPosition(loc?.start?.cfi, loc?.start?.href || null);
+    if (!position) return;
+    S.set(bookKey, position);
+    if (currentFileName) S.set('epubrex_last_book', currentFileName);
+  }
+
   function createRendition(target) {
     if (!book || !viewerArea) return;
+    if (isRsvpOpen) closeRsvp();
+    if (isSpeedTargeting) exitSpeedTargetingMode();
+    pauseRsvp();
+    rsvpWords = [];
+    rsvpIndex = 0;
+    targetedWordIndex = 0;
+    lastResumeWordIndex = null;
+    lastResumePageScroll = null;
     if (rendition) { try { rendition.destroy(); } catch(e){} }
     viewerArea.innerHTML = '';
     if (book.spine) fixSpineNavigation(book.spine);
@@ -721,6 +839,8 @@
       minSpreadWidth: isDouble ? 0 : 99999,
       flow: 'paginated'
     });
+    const activeRendition = rendition;
+    let persistRelocations = false;
 
     applyRenditionTheme();
 
@@ -745,7 +865,19 @@
         }
       }
     });
-    rendition.on('click', (event, contents) => {
+    rendition.on('click', async (event, contents) => {
+      const clickedLink = event.target?.closest?.('a');
+      const rawHref = clickedLink?.getAttribute('href') || clickedLink?.getAttributeNS?.('http://www.w3.org/1999/xlink', 'href');
+      if (clickedLink && rawHref && isFootnoteLink(clickedLink, rawHref)) {
+        event.preventDefault?.();
+        event.stopPropagation?.();
+        if (!isFootnoteOpen) {
+          const clickedContents = contents || activeRendition.getContents()?.[0];
+          await showFootnotePopup(clickedLink, rawHref, clickedContents?.document);
+        }
+        return;
+      }
+
       if (isRsvpOpen) return;
 
       const cnt = contents || rendition.getContents()?.[0];
@@ -762,14 +894,18 @@
       }
     });
     rendition.on('relocated', (loc) => {
-      if (!loc?.start) return;
-      S.set(bookKey, loc.start.cfi);
-      if (currentFileName) S.set('epubrex_last_book', currentFileName);
+      if (rendition !== activeRendition || !loc?.start) return;
+      if (persistRelocations) {
+        const position = storedPosition(loc.start.cfi, loc.start.href || null);
+        if (position) S.set(bookKey, position);
+        if (currentFileName) S.set('epubrex_last_book', currentFileName);
+      }
       updateProgress();
       updateChapter(loc.start.href);
     });
-    rendition.on('rendered', () => {
-      rendition.getContents()?.forEach(attachContentsListeners);
+    rendition.on('rendered', (_section, view) => {
+      attachContentsListeners(view?.contents);
+      bindLiveContentsListeners(activeRendition);
     });
     rendition.hooks.content.register((contents) => {
       attachContentsListeners(contents);
@@ -784,25 +920,55 @@
       cfi = book.locations.cfiFromPercentage(target.pct);
     }
 
-    if (cfi) {
-      let sectionHref;
-      try {
-        const section = book.spine.get(cfi);
-        sectionHref = section?.href;
-      } catch(e) {}
-
-      if (sectionHref) {
-        rendition.display(sectionHref).then(() => {
-          requestAnimationFrame(() => {
-            scrollToCfi(cfi);
-          });
-        });
-      } else {
-        rendition.display(cfi);
+    const finishInitialDisplay = (preferredCfi = null) => {
+      if (rendition !== activeRendition) return;
+      persistRelocations = true;
+      const loc = activeRendition.currentLocation();
+      const restoredCfi = preferredCfi || loc?.start?.cfi;
+      if (restoredCfi) {
+        const position = storedPosition(restoredCfi, loc?.start?.href || null);
+        if (position) S.set(bookKey, position);
+        if (currentFileName) S.set('epubrex_last_book', currentFileName);
       }
+      updateProgress();
+      updateChapter(loc?.start?.href);
+    };
+
+    const displayFallback = (error) => {
+      if (rendition !== activeRendition) return;
+      logApp('Saved reading location could not be restored:', error?.message || error);
+      activeRendition.display().then(() => finishInitialDisplay()).catch((fallbackError) => {
+        logApp('Could not display EPUB:', fallbackError?.message || fallbackError);
+      });
+    };
+
+    if (cfi) {
+      activeRendition.display(cfi).then(() => finishInitialDisplay(cfi)).catch(displayFallback);
     } else {
-      rendition.display();
+      activeRendition.display().then(() => finishInitialDisplay()).catch((error) => {
+        logApp('Could not display EPUB:', error?.message || error);
+      });
     }
+  }
+
+  function bindLiveContentsListeners(activeRendition) {
+    const bind = () => {
+      if (rendition !== activeRendition) return;
+
+      activeRendition.getContents()?.forEach(attachContentsListeners);
+      viewerArea?.querySelectorAll('iframe').forEach((iframe) => {
+        try {
+          const doc = iframe.contentDocument;
+          if (doc?.body) {
+            attachContentsListeners({ document: doc, window: iframe.contentWindow });
+          }
+        } catch(e) {}
+      });
+    };
+
+    bind();
+    setTimeout(bind, 50);
+    setTimeout(bind, 200);
   }
 
   function findWordFromRangeOrSelection(doc, sel) {
@@ -1064,22 +1230,27 @@
   }
 
   async function showFootnotePopup(a, rawHref, doc) {
-    const hashId = rawHref.includes('#') ? rawHref.split('#')[1] : null;
+    const activeBook = book;
+    const inlineNote = (a.getAttribute('data-epub-reaper-note') || a.getAttribute('title') || '').trim();
+    let hashId = rawHref.includes('#') ? rawHref.split('#').slice(1).join('#') : null;
+    try { if (hashId) hashId = decodeURIComponent(hashId); } catch(e) {}
     const filePart = rawHref.split('#')[0];
     let targetEl = null;
+    let loadedSection = null;
 
     if (hashId && doc) {
-      targetEl = doc.getElementById(hashId) || doc.querySelector(`[name="${hashId}"]`) || doc.querySelector(`a[href*="${a.id || hashId}"]`);
+      targetEl = doc.getElementById(hashId) || doc.getElementsByName?.(hashId)?.[0] || null;
     }
 
-    if (!targetEl && filePart && book?.spine) {
+    if (!targetEl && filePart && activeBook?.spine) {
       try {
         const targetHref = resolveTocHref(filePart);
-        const section = book.spine.get(targetHref);
+        const section = activeBook.spine.get(targetHref);
         if (section) {
-          const sectionDoc = await section.load(book.load.bind(book));
+          loadedSection = section;
+          const sectionDoc = await section.load(activeBook.load.bind(activeBook));
           if (sectionDoc) {
-            targetEl = (hashId ? (sectionDoc.getElementById(hashId) || sectionDoc.querySelector(`[name="${hashId}"]`)) : null) || sectionDoc.body;
+            targetEl = (hashId ? (sectionDoc.getElementById(hashId) || sectionDoc.getElementsByName?.(hashId)?.[0]) : null) || sectionDoc.body;
           }
         }
       } catch(err) {}
@@ -1100,21 +1271,38 @@
           el.remove();
         }
       });
+      sanitizeBookFragment(clone);
       contentHtml = clone.innerHTML.trim();
     }
 
-    if (!contentHtml && hashId) {
-      contentHtml = `<p><em>(Không tìm thấy nội dung chi tiết cho chú thích <b>${hashId}</b>)</em></p>`;
+    if (loadedSection) {
+      try { loadedSection.unload(); } catch(e) {}
+    }
+
+    if (book !== activeBook) return;
+
+    if (!contentHtml && inlineNote) {
+      contentHtml = `<p>${esc(inlineNote)}</p>`;
+    } else if (!contentHtml && hashId) {
+      contentHtml = `<p><em>(Footnote content not found: <b>${esc(hashId)}</b>)</em></p>`;
     }
 
     if (footnoteTitle) footnoteTitle.textContent = titleText;
-    if (footnoteBody) footnoteBody.innerHTML = contentHtml;
+    if (footnoteBody) {
+      footnoteBody.innerHTML = contentHtml;
+      const sourceBlock = a.closest('p, li, dd, blockquote, div') || doc?.body;
+      const sourceStyle = sourceBlock && doc?.defaultView?.getComputedStyle(sourceBlock);
+      footnoteBody.style.fontSize = sourceStyle?.fontSize || `${Math.round(16 * currentFontSize / 100)}px`;
+      footnoteBody.style.lineHeight = sourceStyle?.lineHeight || '1.75';
+    }
     if (footnoteJumpBtn) {
-      footnoteJumpBtn.onclick = () => {
-        closeFootnote();
-        const resolved = resolveTocHref(rawHref);
-        rendition?.display(resolved);
-      };
+      const canJump = rawHref !== 'note:' && (Boolean(hashId) || Boolean(filePart));
+      footnoteJumpBtn.style.display = canJump ? '' : 'none';
+      footnoteJumpBtn.onclick = canJump ? () => {
+          closeFootnote();
+          const resolved = resolveTocHref(rawHref);
+          rendition?.display(resolved);
+        } : null;
     }
 
     openFootnote();
@@ -1142,7 +1330,7 @@
 
     async function handleLinkClick(e) {
       if (isSpeedTargeting || isRsvpOpen) return;
-      const a = e.target.closest('a');
+      const a = e.target?.closest?.('a');
       if (!a) return;
 
       const rawHref = a.getAttribute('href') || a.getAttributeNS('http://www.w3.org/1999/xlink', 'href');
@@ -1174,6 +1362,50 @@
       if (targetHref && rendition) {
         closeDrawers();
         rendition.display(targetHref);
+      }
+    }
+
+    doc.querySelectorAll('a[title]').forEach((a) => {
+      const rawHref = a.getAttribute('href') || '';
+      if (!isFootnoteLink(a, rawHref)) return;
+      a.setAttribute('data-epub-reaper-note', a.getAttribute('title') || '');
+      a.removeAttribute('title');
+      let hoverTimer = null;
+      a.addEventListener('mouseenter', () => {
+        clearTimeout(hoverTimer);
+        hoverTimer = setTimeout(() => {
+          if (!isSpeedTargeting && !isRsvpOpen && !isFootnoteOpen) {
+            showFootnotePopup(a, rawHref, doc);
+          }
+        }, 250);
+      });
+      a.addEventListener('mouseleave', () => clearTimeout(hoverTimer));
+    });
+
+    function handleInteraction(e) {
+      if (isRsvpOpen) return;
+      if (!rsvpWords.length) rsvpWords = extractSectionWords();
+
+      const sel = win?.getSelection?.() || doc?.getSelection?.();
+      if (sel && !sel.isCollapsed && sel.toString().trim().length > 0) {
+        const selIdx = findWordFromRangeOrSelection(doc, sel);
+        if (selIdx !== -1) {
+          targetedWordIndex = selIdx;
+          lastResumeWordIndex = selIdx;
+          lastResumePageScroll = rendition?.manager?.container?.scrollLeft || 0;
+          if (isSpeedTargeting) highlightResumeWord(rsvpWords[selIdx], false);
+          return;
+        }
+      }
+
+      if (typeof e.clientX === 'number' && typeof e.clientY === 'number') {
+        const clickedIdx = findWordAtPoint(doc, e.clientX, e.clientY);
+        if (clickedIdx !== -1) {
+          targetedWordIndex = clickedIdx;
+          lastResumeWordIndex = clickedIdx;
+          lastResumePageScroll = rendition?.manager?.container?.scrollLeft || 0;
+          if (isSpeedTargeting) highlightResumeWord(rsvpWords[clickedIdx], false);
+        }
       }
     }
 
@@ -1635,25 +1867,6 @@
     }
   }
 
-  function scrollToCfi(cfi) {
-    if (!rendition?.manager) return;
-    const manager = rendition.manager;
-    const delta = manager.layout?.delta;
-    if (!delta || delta <= 0) return;
-
-    const contents = rendition.getContents();
-    if (!contents?.length) return;
-
-    try {
-      const loc = contents[0].locationOf(cfi);
-      const left = loc?.left || 0;
-      if (left <= 0) return;
-      const pageIndex = Math.round(left / delta);
-      const scrollTarget = Math.min(pageIndex * delta, manager.container.scrollWidth - delta);
-      manager.scrollTo(scrollTarget, 0, true);
-    } catch(e) {}
-  }
-
   // ── Spread & Column Width ─────────────────────────────────────────────
   function setSpread(mode) {
     if (currentSpread === mode) return;
@@ -1722,6 +1935,7 @@
   }
 
   function applyTheme(t) {
+    if (!['dark', 'light', 'sepia'].includes(t)) return;
     currentTheme = t;
     document.documentElement.setAttribute('data-theme', t);
     themeBtns.forEach((b) => b.classList.toggle('active', b.dataset.theme === t));
@@ -1741,36 +1955,34 @@
     if (!rendition || isScrubbing) return;
     const loc = rendition.currentLocation();
     if (!loc?.start?.cfi) return;
-    let rounded = null;
-    if (book?.locations?.length()) {
-      const pct = book.locations.percentageFromCfi(loc.start.cfi);
-      if (pct !== null && !isNaN(pct)) {
-        rounded = Math.round(pct * 100);
-      }
-    } else if (book?.spine?.spineItems?.length && loc.start.href) {
-      const idx = book.spine.spineItems.findIndex((s) => s.href === loc.start.href || loc.start.href.includes(s.href));
-      if (idx !== -1) {
-        rounded = Math.round((idx / book.spine.spineItems.length) * 100);
-      }
-    }
-    if (rounded !== null) {
-      progressSlider && (progressSlider.value = rounded);
-      progressPercentage && (progressPercentage.textContent = rounded + '%');
+    if (!book?.locations?.length()) return;
+    const pct = Number.isFinite(loc.start.percentage)
+      ? loc.start.percentage
+      : book.locations.percentageFromCfi(loc.start.cfi);
+    if (pct !== null && Number.isFinite(pct)) {
+      const precise = Math.round(pct * 1000) / 10;
+      progressSlider && (progressSlider.value = precise);
+      progressPercentage && (progressPercentage.textContent = formatPercentage(precise));
+      const ratio = pct;
+      chapterPositions.forEach((chapter, index) => {
+        const next = chapterPositions[index + 1];
+        chapter.markerEl?.classList.toggle('active', ratio >= chapter.ratio && (!next || ratio < next.ratio));
+      });
     }
   }
 
   function onScrub(e) {
     isScrubbing = true;
-    progressPercentage && (progressPercentage.textContent = e.target.value + '%');
+    progressPercentage && (progressPercentage.textContent = formatPercentage(Number(e.target.value)));
   }
   function onScrubEnd(e) {
     isScrubbing = false;
-    goToPercentage(parseInt(e.target.value, 10));
+    goToPercentage(parseFloat(e.target.value));
   }
   function jumpPct() {
     const val = prompt('Jump to percentage (0–100):', progressSlider?.value || '0');
     if (val !== null) {
-      const n = parseInt(val, 10);
+      const n = parseFloat(val);
       if (!isNaN(n) && n >= 0 && n <= 100) goToPercentage(n);
     }
   }
@@ -1782,13 +1994,6 @@
       if (cfi) {
         rendition.display(cfi);
         return;
-      }
-    }
-    if (book.spine?.spineItems?.length) {
-      const idx = Math.min(book.spine.spineItems.length - 1, Math.floor((pct / 100) * book.spine.spineItems.length));
-      const section = book.spine.spineItems[idx];
-      if (section?.href) {
-        rendition.display(section.href);
       }
     }
   }
@@ -1891,33 +2096,34 @@
       const targetHref = resolveTocHref(it.href);
       const cleanHref = targetHref.split('#')[0];
 
-      if (book.locations?.length()) {
-        try {
-          const section = book.spine.get(cleanHref);
-          const cfi = section?.cfi;
-          if (cfi) {
-            pct = book.locations.percentageFromCfi(cfi);
-          }
-        } catch(e) {}
-      }
+      if (book.locations?.length()) pct = getSectionStartPercentage(cleanHref);
 
-      if ((pct === null || isNaN(pct)) && book.spine?.spineItems?.length) {
-        const idx = book.spine.spineItems.findIndex((s) => s.href === cleanHref || cleanHref.endsWith(s.href) || s.href.endsWith(cleanHref));
-        if (idx !== -1) {
-          pct = idx / book.spine.spineItems.length;
-        }
-      }
-
-      if (pct !== null && !isNaN(pct)) {
+      if (pct !== null && Number.isFinite(pct)) {
+        pct = Math.max(0, Math.min(1, pct));
         const roundedPct = Math.round(pct * 100);
         const markerKey = roundedPct + '_' + cleanHref;
         if (addedKeys.has(markerKey)) return;
         addedKeys.add(markerKey);
 
-        const marker = document.createElement('div');
+        const marker = document.createElement('button');
+        marker.type = 'button';
         marker.className = 'chapter-marker';
         marker.style.left = (pct * 100) + '%';
         marker.title = it.label + ' (' + roundedPct + '%)';
+        marker.setAttribute('aria-label', `Jump to ${it.label}, ${roundedPct}%`);
+
+        const showMarkerTooltip = (e) => {
+          e.stopPropagation();
+          if (!scrubberWrapper || !scrubberTooltip) return;
+          const rect = scrubberWrapper.getBoundingClientRect();
+          const markerX = pct * rect.width;
+          if (tooltipChapterTitle) tooltipChapterTitle.textContent = it.label;
+          if (tooltipPercentage) tooltipPercentage.textContent = formatPercentage(Math.round(pct * 1000) / 10);
+          scrubberTooltip.style.left = Math.max(70, Math.min(rect.width - 70, markerX)) + 'px';
+          scrubberTooltip.style.display = 'flex';
+        };
+        marker.addEventListener('mouseenter', showMarkerTooltip);
+        marker.addEventListener('mousemove', showMarkerTooltip);
 
         marker.addEventListener('click', (e) => {
           e.stopPropagation();
@@ -1938,6 +2144,35 @@
     });
 
     chapterPositions.sort((a, b) => a.ratio - b.ratio);
+  }
+
+  function getSectionStartPercentage(cleanHref) {
+    if (!book?.locations?.length() || !book?.spine) return null;
+    const section = book.spine.get(cleanHref);
+    if (!section) return null;
+
+    const cfi = section.cfiBase || section.cfi;
+    if (cfi) {
+      try {
+        const location = book.locations.locationFromCfi(cfi);
+        if (Number.isFinite(location) && location >= 0) {
+          const percentage = book.locations.percentageFromLocation(location);
+          if (Number.isFinite(percentage)) return percentage;
+        }
+      } catch(e) {}
+    }
+
+    const generated = book.locations._locations;
+    if (!Array.isArray(generated) || !generated.length) return null;
+    const index = generated.findIndex((locationCfi) => {
+      try {
+        const locationSection = book.spine.get(locationCfi);
+        return locationSection && locationSection.href === section.href;
+      } catch(e) {
+        return false;
+      }
+    });
+    return index >= 0 ? index / Math.max(1, generated.length - 1) : null;
   }
 
   function initScrubberTooltip() {
@@ -2029,20 +2264,28 @@
   // ── Search ─────────────────────────────────────────────────────────────
   async function doSearch(e) {
     e.preventDefault();
+    const generation = ++searchGeneration;
     const q = searchInput?.value?.trim();
     if (!q || !book) return;
     searchResults.innerHTML = '<p class="drawer-empty">Searching book...</p>';
 
+    const activeBook = book;
     const hits = [];
-    for (const si of book.spine.spineItems) {
+    for (const si of activeBook.spine.spineItems) {
+      if (book !== activeBook || generation !== searchGeneration) return;
       try {
-        await si.load(book.load.bind(book));
+        await si.load(activeBook.load.bind(activeBook));
         const m = si.find(q);
-        si.unload();
         if (m?.length) hits.push(...m);
-      } catch(err) {}
+      } catch(err) {
+        logApp('Search skipped a section:', err?.message || err);
+      } finally {
+        try { si.unload(); } catch(err) {}
+      }
       await new Promise((r) => setTimeout(r, 0));
     }
+
+    if (book !== activeBook || generation !== searchGeneration) return;
 
     searchResults.innerHTML = '';
     if (!hits.length) {
@@ -2054,7 +2297,9 @@
     hits.slice(0, 50).forEach((h) => {
       const el = document.createElement('div');
       el.className = 'search-result-item';
-      const cleanExcerpt = h.excerpt.replace(new RegExp(`(${escapeRegex(q)})`, 'gi'), '<mark>$1</mark>');
+      const safeExcerpt = esc(h.excerpt);
+      const safeQuery = esc(q);
+      const cleanExcerpt = safeExcerpt.replace(new RegExp(`(${escapeRegex(safeQuery)})`, 'gi'), '<mark>$1</mark>');
       el.innerHTML = `<span>...${cleanExcerpt}...</span>`;
       el.addEventListener('click', () => { closeDrawers(); rendition?.display(h.cfi); });
       frag.appendChild(el);
@@ -2064,9 +2309,32 @@
 
   // ── Helpers ────────────────────────────────────────────────────────────
   function esc(s) {
-    return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+  }
+  function formatPercentage(value) {
+    if (!Number.isFinite(value)) return '0%';
+    return (Number.isInteger(value) ? String(value) : value.toFixed(1)) + '%';
   }
   function escapeRegex(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+
+  function sanitizeBookFragment(root) {
+    root.querySelectorAll('script, style, link, meta, base, iframe, frame, object, embed, form, input, button, textarea, select, svg, math').forEach((el) => el.remove());
+    root.querySelectorAll('*').forEach((el) => {
+      for (const attr of Array.from(el.attributes)) {
+        const name = attr.name.toLowerCase();
+        const value = attr.value.trim();
+        if (name.startsWith('on') || name === 'style' || name === 'srcdoc') {
+          el.removeAttribute(attr.name);
+        } else if (name === 'id' || name === 'class') {
+          el.removeAttribute(attr.name);
+        } else if (name === 'href' || name === 'xlink:href') {
+          el.removeAttribute(attr.name);
+        } else if (name === 'src' && !value.toLowerCase().startsWith('blob:')) {
+          el.removeAttribute(attr.name);
+        }
+      }
+    });
+  }
 
   // ── Native Bridge Functions (Callable from Swift) ──────────────────────
   window.openBookFromBase64 = function(base64Data, fileName) {

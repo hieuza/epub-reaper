@@ -16,7 +16,9 @@
 - 🔍 **Full-Text In-Book Search (`⌘F`)**: Non-blocking search across all chapters with highlighted excerpt previews.
 - 🔖 **Bookmarks Manager**: Save favorite reading locations with chapter titles.
 - 🕐 **Reading History**: Quick-switch sidebar drawer for previously opened books.
-- 🎚️ **Progress Scrubber & Jump %**: Drag slider or jump to any exact percentage in the book.
+- 🎚️ **Chapter-Aware Progress Scrubber**: Drag to a percentage, inspect chapter tooltips, or click chapter markers.
+- 📝 **Footnote Previews**: Open notes in a lightweight popup without losing your reading position.
+- 🎯 **RSVP Speed Pacer**: Select a starting word and read with adjustable word-by-word pacing.
 - 🔤 **Typography Sizing**: Quick font scaling (`A-` / `A+`).
 - ⛶ **Fullscreen Mode (`F` / `⌃⌘F`)**: Immersive, distraction-free reading.
 - ⌨️ **Keyboard Navigation**: Smooth page turns with `←` / `→` arrow keys, `PageUp` / `PageDown`, and `Space`.
@@ -30,7 +32,7 @@
 Compile `EPUB Reaper.app` directly using macOS's built-in Swift compiler (zero dependencies required):
 
 ```bash
-cd /Users/hieuza/code/epub-reaper
+cd /path/to/epub-reaper
 ./build.sh
 ```
 

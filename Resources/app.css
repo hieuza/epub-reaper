@@ -303,12 +303,16 @@ body {
 }
 
 .chapter-marker {
+  appearance: none;
+  -webkit-appearance: none;
   position: absolute;
   top: 50%;
   transform: translate(-50%, -50%);
   width: 3px;
   height: 10px;
   background: var(--text-muted);
+  border: 0;
+  padding: 0;
   opacity: 0.55;
   border-radius: 2px;
   pointer-events: auto;
@@ -975,4 +979,3 @@ body {
   color: var(--primary);
   background: var(--btn-hover);
 }
-
