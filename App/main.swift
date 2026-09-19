@@ -8,10 +8,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNa
     var pendingFiles: [URL] = []
     var isWebReady = false
     private var fileLoadGeneration = 0
+    private var keyEventMonitor: Any?
+    private var captureNavigationKeys = true
+    private let readingPositionsKey = "readingPositions"
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupMenu()
         setupWindow()
+        installKeyEventMonitor()
         loadWebContent()
     }
 
@@ -43,6 +47,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNa
         return true
     }
 
+    func applicationWillTerminate(_ notification: Notification) {
+        if let keyEventMonitor {
+            NSEvent.removeMonitor(keyEventMonitor)
+        }
+        UserDefaults.standard.synchronize()
+    }
+
     // ── Window Setup ─────────────────────────────────────────────────────────
     private func setupWindow() {
         let screenRect = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1200, height: 800)
@@ -70,8 +81,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNa
         // WKWebView Configuration
         let config = WKWebViewConfiguration()
         let userContent = WKUserContentController()
-        userContent.add(self, name: "openFileDialog")
-        userContent.add(self, name: "logHandler")
+        userContent.add(self, name: "appBridge")
+        userContent.addUserScript(WKUserScript(
+            source: "window.__EPUB_REAPER_POSITIONS__ = \(encodedReadingPositions());",
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: true
+        ))
         config.userContentController = userContent
         config.preferences.setValue(true, forKey: "allowFileAccessFromFileURLs")
         config.setValue(true, forKey: "allowUniversalAccessFromFileURLs")
@@ -86,6 +101,49 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNa
 
         window.contentView!.addSubview(webView)
         window.makeKeyAndOrderFront(nil)
+    }
+
+    private func encodedReadingPositions() -> String {
+        let positions = UserDefaults.standard.dictionary(forKey: readingPositionsKey) ?? [:]
+        guard JSONSerialization.isValidJSONObject(positions),
+              let data = try? JSONSerialization.data(withJSONObject: positions),
+              let json = String(data: data, encoding: .utf8) else {
+            return "{}"
+        }
+        return json
+    }
+
+    private func installKeyEventMonitor() {
+        keyEventMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self,
+                  self.isWebReady,
+                  event.window === self.window,
+                  self.window.attachedSheet == nil,
+                  self.captureNavigationKeys,
+                  event.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty,
+                  let key = self.navigationKey(for: event) else {
+                return event
+            }
+
+            let encodedKey = try? JSONSerialization.data(withJSONObject: [key])
+            guard let encodedKey,
+                  let json = String(data: encodedKey, encoding: .utf8) else {
+                return event
+            }
+            self.webView.evaluateJavaScript("window.handleNativeKey?.(\(json)[0]);", completionHandler: nil)
+            return nil
+        }
+    }
+
+    private func navigationKey(for event: NSEvent) -> String? {
+        switch event.keyCode {
+        case 123: return "ArrowLeft"
+        case 124: return "ArrowRight"
+        case 116: return "PageUp"
+        case 121: return "PageDown"
+        case 49: return " "
+        default: return nil
+        }
     }
 
     // ── Load Web Assets ──────────────────────────────────────────────────────
@@ -152,12 +210,41 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNa
 
     // ── WKScriptMessageHandler ───────────────────────────────────────────────
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
-        if message.name == "openFileDialog" {
+        guard message.name == "appBridge",
+              let body = message.body as? [String: Any],
+              let type = body["type"] as? String else { return }
+
+        switch type {
+        case "openFile":
             showNativeOpenDialog()
-        } else if message.name == "logHandler", let body = message.body as? String {
-            print(body)
-            fflush(stdout)
+        case "log":
+            if let text = body["message"] as? String {
+                print(text)
+                fflush(stdout)
+            }
+        case "keyboardContext":
+            captureNavigationKeys = body["capture"] as? Bool ?? true
+        case "savePosition":
+            saveReadingPosition(body)
+        default:
+            break
         }
+    }
+
+    private func saveReadingPosition(_ message: [String: Any]) {
+        guard let bookKey = message["bookKey"] as? String,
+              let rawPosition = message["position"] as? [String: Any],
+              let cfi = rawPosition["cfi"] as? String,
+              !cfi.isEmpty else { return }
+
+        var position: [String: Any] = ["cfi": cfi]
+        if let href = rawPosition["href"] as? String { position["href"] = href }
+        if let percentage = rawPosition["pct"] as? NSNumber { position["pct"] = percentage }
+        position["updatedAt"] = Date().timeIntervalSince1970 * 1000
+
+        var positions = UserDefaults.standard.dictionary(forKey: readingPositionsKey) ?? [:]
+        positions[bookKey] = position
+        UserDefaults.standard.set(positions, forKey: readingPositionsKey)
     }
 
     // ── Native File Operations ───────────────────────────────────────────────

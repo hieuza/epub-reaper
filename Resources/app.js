@@ -18,6 +18,13 @@
   let currentBookTitle   = null;
   let searchGeneration   = 0;
   let bookLoadGeneration = 0;
+  let currentPosition    = null;
+  let locationGenerationBook = null;
+  let pageTurnRendition  = null;
+  let pageTurnReady      = false;
+  let pageTurnInFlight   = false;
+  let queuedPageTurns    = [];
+  const handledKeyEvents = new WeakSet();
 
   const FONT_STACK = '-apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif';
   const FAV_KEY = 'epubrex_favorites';
@@ -27,7 +34,6 @@
 
   const bookTitleEl       = byId('bookTitle');
   const bookAuthorEl      = byId('bookAuthor');
-  const topBar            = byId('topBar');
   const bottomBar         = byId('bottomBar');
   const dropZone          = byId('dropZone');
   const recentSection     = byId('recentBooksSection');
@@ -116,12 +122,17 @@
   let rsvpPlaying      = false;
   let rsvpTimer        = null;
 
-  const _logHandler = window.webkit?.messageHandlers?.logHandler || null;
+  const nativeBridge = window.webkit?.messageHandlers?.appBridge || null;
+
+  function postNative(type, payload = {}) {
+    if (!nativeBridge) return;
+    try { nativeBridge.postMessage({ type, ...payload }); } catch(e) {}
+  }
 
   function logApp(...args) {
     const msg = '[EPUB Reaper] ' + args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ');
     console.log(msg);
-    if (_logHandler) { try { _logHandler.postMessage(msg); } catch(e) {} }
+    postNative('log', { message: msg });
   }
 
   // ── Unified Storage Wrapper ────────────────────────────────────────────
@@ -138,6 +149,27 @@
       try {
         localStorage.setItem(k, JSON.stringify(v));
       } catch(e) {}
+    }
+  };
+
+  // Reading positions are application state, not webpage preferences. The
+  // native app injects its UserDefaults snapshot before this script runs and
+  // receives every confirmed relocation immediately. localStorage remains a
+  // browser fallback and migrates positions from older releases.
+  const nativePositions = window.__EPUB_REAPER_POSITIONS__ || {};
+  const Positions = {
+    get(key, cb) {
+      if (Object.prototype.hasOwnProperty.call(nativePositions, key)) {
+        cb(nativePositions[key]);
+      } else {
+        S.get(key, cb);
+      }
+    },
+    set(key, position) {
+      if (!key || !position?.cfi) return;
+      nativePositions[key] = position;
+      S.set(key, position);
+      postNative('savePosition', { bookKey: key, position });
     }
   };
 
@@ -287,7 +319,7 @@
         }
       }
 
-      if (!currentFileName && rec?.buffer) {
+      if (bookLoadGeneration === 0 && !currentFileName && rec?.buffer) {
         logApp('Auto-loading last book:', rec.name);
         openBook(rec.buffer, rec.name, false);
       }
@@ -354,7 +386,9 @@
       if (e.dataTransfer?.files.length) loadFile(e.dataTransfer.files[0]);
     });
     window.addEventListener('keydown', onKey, true);
-    window.addEventListener('beforeunload', persistCurrentPosition);
+    document.addEventListener('focusin', reportKeyboardContext, true);
+    document.addEventListener('focusout', () => requestAnimationFrame(reportKeyboardContext), true);
+    reportKeyboardContext();
     makeDraggable(speedTargetBar);
     initScrubberTooltip();
 
@@ -417,41 +451,77 @@
   }
 
   function requestOpenFile() {
-    if (window.webkit?.messageHandlers?.openFileDialog) {
-      window.webkit.messageHandlers.openFileDialog.postMessage({});
+    if (nativeBridge) {
+      postNative('openFile');
     } else {
       fileInput?.click();
     }
   }
 
-  let lastPageTurnTime = 0;
-  const PAGE_TURN_DEBOUNCE_MS = 120;
-
-  function pagePrev() {
-    const now = Date.now();
-    if (now - lastPageTurnTime < PAGE_TURN_DEBOUNCE_MS) return;
-    lastPageTurnTime = now;
-    const activeRendition = rendition;
-    Promise.resolve(activeRendition?.prev()).then(() => {
-      if (rendition === activeRendition) requestAnimationFrame(persistCurrentPosition);
-    }).catch(() => {});
+  function resetPageTurnState(activeRendition = null) {
+    pageTurnRendition = activeRendition;
+    pageTurnReady = false;
+    pageTurnInFlight = false;
+    queuedPageTurns = [];
   }
 
-  function pageNext() {
-    const now = Date.now();
-    if (now - lastPageTurnTime < PAGE_TURN_DEBOUNCE_MS) return;
-    lastPageTurnTime = now;
+  function turnPage(direction) {
     const activeRendition = rendition;
-    Promise.resolve(activeRendition?.next()).then(() => {
-      if (rendition === activeRendition) requestAnimationFrame(persistCurrentPosition);
-    }).catch(() => {});
+    if (!activeRendition) return;
+
+    if (pageTurnRendition !== activeRendition) resetPageTurnState(activeRendition);
+    if (!pageTurnReady || pageTurnInFlight) {
+      // Serialize epub.js moves while retaining deliberate repeated presses.
+      if (queuedPageTurns.length < 6) queuedPageTurns.push(direction);
+      return;
+    }
+
+    pageTurnInFlight = true;
+    Promise.resolve().then(() => activeRendition[direction]()).catch((error) => {
+      logApp(`Could not turn page ${direction}:`, error?.message || error);
+    }).finally(() => {
+      if (pageTurnRendition !== activeRendition) return;
+      pageTurnInFlight = false;
+      const pending = queuedPageTurns.shift();
+      if (pending && rendition === activeRendition) turnPage(pending);
+    });
+  }
+
+  function pagePrev() { turnPage('prev'); }
+  function pageNext() { turnPage('next'); }
+
+  function normalizedKey(e) {
+    if (e.key === 'Left') return 'ArrowLeft';
+    if (e.key === 'Right') return 'ArrowRight';
+    if (e.key === 'Up') return 'ArrowUp';
+    if (e.key === 'Down') return 'ArrowDown';
+    if (e.key === 'Spacebar') return ' ';
+    if (e.key) return e.key;
+    return ({ 32: ' ', 33: 'PageUp', 34: 'PageDown', 37: 'ArrowLeft', 38: 'ArrowUp', 39: 'ArrowRight', 40: 'ArrowDown' })[e.keyCode] || '';
+  }
+
+  function isEditableElement(target) {
+    if (target?.isContentEditable) return true;
+    return Boolean(target?.closest?.('input, textarea, select, [contenteditable="true"]'));
+  }
+
+  function isEditableKeyTarget(e) {
+    if (isEditableElement(e.target)) return true;
+    return ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName) ||
+      Boolean(document.activeElement?.isContentEditable);
+  }
+
+  function reportKeyboardContext(e) {
+    const active = e?.type === 'focusin' ? e.target : document.activeElement;
+    postNative('keyboardContext', { capture: !isEditableElement(active) });
   }
 
   function onKey(e) {
-    if (!e || e._handledByEpubReaper || e.defaultPrevented) return;
-    e._handledByEpubReaper = true;
+    if (!e || handledKeyEvents.has(e)) return;
+    handledKeyEvents.add(e);
+    const key = normalizedKey(e);
 
-    if (e.key === 'Escape') {
+    if (key === 'Escape') {
       if (isFootnoteOpen) { closeFootnote(); e.preventDefault(); return; }
       if (isRsvpOpen) { closeRsvp(); e.preventDefault(); return; }
       if (isSpeedTargeting) { exitSpeedTargetingMode(); e.preventDefault(); return; }
@@ -461,42 +531,43 @@
     }
 
     if (isRsvpOpen) {
-      if (e.key === ' ') {
+      if (key === ' ') {
         e.preventDefault();
         toggleRsvpPlayback();
         return;
       }
-      if (e.key === 'ArrowUp' || e.key === '+' || e.key === '=') { e.preventDefault(); changeRsvpSpeed(25); return; }
-      if (e.key === 'ArrowDown' || e.key === '-') { e.preventDefault(); changeRsvpSpeed(-25); return; }
-      if (e.key === 'ArrowLeft') { e.preventDefault(); stepRsvpWords(-10); return; }
-      if (e.key === 'ArrowRight') { e.preventDefault(); stepRsvpWords(10); return; }
+      if (key === 'ArrowUp' || key === '+' || key === '=') { e.preventDefault(); changeRsvpSpeed(25); return; }
+      if (key === 'ArrowDown' || key === '-') { e.preventDefault(); changeRsvpSpeed(-25); return; }
+      if (key === 'ArrowLeft') { e.preventDefault(); stepRsvpWords(-10); return; }
+      if (key === 'ArrowRight') { e.preventDefault(); stepRsvpWords(10); return; }
       return;
     }
 
     if (isSpeedTargeting) {
-      if (e.key === ' ') {
+      if (key === ' ') {
         e.preventDefault();
         startRsvpPlayback(targetedWordIndex);
         return;
       }
     }
 
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f') {
+    if ((e.ctrlKey || e.metaKey) && key.toLowerCase() === 'f') {
       e.preventDefault(); toggleDrawer(searchSidebar); searchInput?.focus(); return;
     }
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'o') {
+    if ((e.ctrlKey || e.metaKey) && key.toLowerCase() === 'o') {
       e.preventDefault(); requestOpenFile(); return;
     }
-    if (['INPUT','TEXTAREA'].includes(document.activeElement?.tagName)) return;
+    if (isEditableKeyTarget(e)) return;
 
-    if (e.key.toLowerCase() === 'v') {
+    if (key.toLowerCase() === 'v') {
       toggleSpeedReadingMode();
       return;
     }
 
     if (!rendition) return;
-    if (e.key === 'ArrowLeft'  || e.key === 'PageUp')   { e.preventDefault(); pagePrev(); return; }
-    if (e.key === 'ArrowRight' || e.key === 'PageDown' || e.key === ' ') { e.preventDefault(); pageNext(); return; }
+    if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+    if (key === 'ArrowLeft'  || key === 'PageUp')   { e.preventDefault(); pagePrev(); return; }
+    if (key === 'ArrowRight' || key === 'PageDown' || key === ' ') { e.preventDefault(); pageNext(); return; }
   }
 
   function toggleDrawer(d) {
@@ -680,7 +751,7 @@
     rsvpIndex = 0;
     targetedWordIndex = 0;
     lastResumeWordIndex = null;
-    lastResumePageScroll = null;
+    resetPageTurnState();
     if (rendition) { try { rendition.destroy(); } catch(e){} }
     rendition = null;
     if (book) { try { book.destroy(); } catch(e){} }
@@ -704,6 +775,8 @@
     updateFavoriteButtonState();
 
     bookKey = 'epubrex_pos_' + fileName.replace(/\s+/g, '_');
+    currentPosition = null;
+    locationGenerationBook = null;
     book = ePub(data);
     const activeBook = book;
 
@@ -727,11 +800,16 @@
       alert('Unable to open this EPUB file. It may be damaged or unsupported.');
     });
 
-    book.loaded.spine.then((spine) => {
-      if (book === activeBook) fixSpineNavigation(spine);
-    }).catch((error) => logApp('Could not load EPUB spine:', error?.message || error));
-    S.get(bookKey, (cfi) => {
-      if (book === activeBook) createRendition(cfi || undefined);
+    Positions.get(bookKey, (savedPosition) => {
+      const position = normalizeStoredPosition(savedPosition);
+      currentPosition = position;
+      activeBook.loaded.spine.then((spine) => {
+        if (book !== activeBook) return;
+        fixSpineNavigation(spine);
+        createRendition(position || undefined);
+      }).catch((error) => {
+        if (book === activeBook) logApp('Could not load EPUB spine:', error?.message || error);
+      });
     });
 
     book.loaded.metadata.then(async (m) => {
@@ -755,18 +833,23 @@
       buildToc(tocItems);
       if (activeBook.locations?.length()) buildChapterMarkers(tocItems);
     }).catch((error) => logApp('Could not load EPUB navigation:', error?.message || error));
-    activeBook.ready.then(() => {
-      if (book !== activeBook) return null;
-      return activeBook.locations.generate(1024);
-    }).then(() => {
+  }
+
+  function generateLocations(activeBook) {
+    if (!activeBook || locationGenerationBook === activeBook) return;
+    locationGenerationBook = activeBook;
+    setTimeout(() => {
       if (book !== activeBook) return;
-      if (progressSlider) progressSlider.disabled = false;
-      if (jumpBtn) jumpBtn.disabled = false;
-      updateProgress();
-      buildChapterMarkers(tocItems);
-    }).catch((error) => {
-      if (book === activeBook) logApp('Could not generate EPUB locations:', error?.message || error);
-    });
+      activeBook.locations.generate(1024).then(() => {
+        if (book !== activeBook) return;
+        if (progressSlider) progressSlider.disabled = false;
+        if (jumpBtn) jumpBtn.disabled = false;
+        updateProgress();
+        buildChapterMarkers(tocItems);
+      }).catch((error) => {
+        if (book === activeBook) logApp('Could not generate EPUB locations:', error?.message || error);
+      });
+    }, 0);
   }
 
   // ── Rendition (re-)creation ───────────────────────────────────────────
@@ -778,32 +861,43 @@
   }
 
   function capturePosition() {
-    if (!rendition) return {};
-    const loc = rendition.currentLocation();
-    const cfi = loc?.start?.cfi || null;
-    let pct = null;
-    if (cfi && book?.locations?.length()) {
-      pct = book.locations.percentageFromCfi(cfi);
-    }
-    return { cfi, pct };
+    if (!rendition) return currentPosition;
+    return positionFromLocation(rendition.currentLocation()) || currentPosition;
   }
 
-  function storedPosition(cfi, href = null) {
+  function positionFromLocation(location) {
+    const cfi = location?.start?.cfi;
     if (!cfi) return null;
     let pct = null;
     if (book?.locations?.length()) {
       try { pct = book.locations.percentageFromCfi(cfi); } catch(e) {}
     }
-    return { cfi, pct: Number.isFinite(pct) ? pct : null, href };
+    return {
+      cfi,
+      href: location.start.href || null,
+      pct: Number.isFinite(pct) ? pct : null,
+      updatedAt: Date.now()
+    };
   }
 
-  function persistCurrentPosition() {
-    if (!bookKey || !rendition) return;
-    const loc = rendition.currentLocation();
-    const position = storedPosition(loc?.start?.cfi, loc?.start?.href || null);
-    if (!position) return;
-    S.set(bookKey, position);
-    if (currentFileName) S.set('epubrex_last_book', currentFileName);
+  function normalizeStoredPosition(value) {
+    if (typeof value === 'string') return { cfi: value, pct: null, href: null, updatedAt: null };
+    if (!value || typeof value !== 'object') return null;
+    const cfi = typeof value.cfi === 'string' && value.cfi ? value.cfi : null;
+    const pct = Number.isFinite(value.pct) ? Math.max(0, Math.min(1, value.pct)) : null;
+    if (!cfi && pct === null) return null;
+    return {
+      cfi,
+      pct,
+      href: typeof value.href === 'string' ? value.href : null,
+      updatedAt: Number.isFinite(value.updatedAt) ? value.updatedAt : null
+    };
+  }
+
+  function rememberPosition(position, positionKey = bookKey) {
+    if (!positionKey || !position?.cfi) return;
+    if (positionKey === bookKey) currentPosition = position;
+    Positions.set(positionKey, position);
   }
 
   function createRendition(target) {
@@ -815,8 +909,8 @@
     rsvpIndex = 0;
     targetedWordIndex = 0;
     lastResumeWordIndex = null;
-    lastResumePageScroll = null;
     if (rendition) { try { rendition.destroy(); } catch(e){} }
+    resetPageTurnState();
     viewerArea.innerHTML = '';
     if (book.spine) fixSpineNavigation(book.spine);
 
@@ -840,16 +934,24 @@
       flow: 'paginated'
     });
     const activeRendition = rendition;
-    let persistRelocations = false;
+    const activePositionKey = bookKey;
+    resetPageTurnState(activeRendition);
+
+    let restoreCfi = null;
+    if (typeof target === 'string') {
+      restoreCfi = target;
+    } else if (target?.cfi) {
+      restoreCfi = target.cfi;
+    } else if (target?.pct != null && book?.locations?.length()) {
+      restoreCfi = book.locations.cfiFromPercentage(target.pct);
+    }
 
     applyRenditionTheme();
 
-    rendition.on('selected', (cfiRange, contents) => {
-      lastSelectedCfi = cfiRange;
+    rendition.on('selected', (_cfiRange, contents) => {
       const win = contents?.window || window;
       const doc = contents?.document || document;
       const sel = win.getSelection ? win.getSelection() : null;
-      lastSelectedText = sel ? sel.toString().trim() : '';
 
       if (isRsvpOpen) return;
 
@@ -895,41 +997,37 @@
     });
     rendition.on('relocated', (loc) => {
       if (rendition !== activeRendition || !loc?.start) return;
-      if (persistRelocations) {
-        const position = storedPosition(loc.start.cfi, loc.start.href || null);
-        if (position) S.set(bookKey, position);
-        if (currentFileName) S.set('epubrex_last_book', currentFileName);
-      }
+      if (!restoreCfi) rememberPosition(positionFromLocation(loc), activePositionKey);
       updateProgress();
       updateChapter(loc.start.href);
+      generateLocations(book);
     });
     rendition.on('rendered', (_section, view) => {
       attachContentsListeners(view?.contents);
       bindLiveContentsListeners(activeRendition);
+      if (rendition === activeRendition && !pageTurnReady) {
+        requestAnimationFrame(() => {
+          if (rendition !== activeRendition) return;
+          if (restoreCfi) {
+            scrollRenditionToCfi(activeRendition, restoreCfi);
+            rememberPosition(normalizeStoredPosition({ cfi: restoreCfi }), activePositionKey);
+            restoreCfi = null;
+          }
+          pageTurnReady = true;
+          generateLocations(book);
+          const pending = queuedPageTurns.shift();
+          if (pending) turnPage(pending);
+        });
+      }
     });
     rendition.hooks.content.register((contents) => {
       attachContentsListeners(contents);
     });
 
-    let cfi;
-    if (typeof target === 'string') {
-      cfi = target;
-    } else if (target?.cfi) {
-      cfi = target.cfi;
-    } else if (target?.pct != null && book?.locations?.length()) {
-      cfi = book.locations.cfiFromPercentage(target.pct);
-    }
-
-    const finishInitialDisplay = (preferredCfi = null) => {
+    const finishInitialDisplay = () => {
       if (rendition !== activeRendition) return;
-      persistRelocations = true;
       const loc = activeRendition.currentLocation();
-      const restoredCfi = preferredCfi || loc?.start?.cfi;
-      if (restoredCfi) {
-        const position = storedPosition(restoredCfi, loc?.start?.href || null);
-        if (position) S.set(bookKey, position);
-        if (currentFileName) S.set('epubrex_last_book', currentFileName);
-      }
+      if (!restoreCfi) rememberPosition(positionFromLocation(loc), activePositionKey);
       updateProgress();
       updateChapter(loc?.start?.href);
     };
@@ -937,17 +1035,36 @@
     const displayFallback = (error) => {
       if (rendition !== activeRendition) return;
       logApp('Saved reading location could not be restored:', error?.message || error);
+      restoreCfi = null;
       activeRendition.display().then(() => finishInitialDisplay()).catch((fallbackError) => {
         logApp('Could not display EPUB:', fallbackError?.message || fallbackError);
       });
     };
 
-    if (cfi) {
-      activeRendition.display(cfi).then(() => finishInitialDisplay(cfi)).catch(displayFallback);
+    if (restoreCfi) {
+      let displayTarget = restoreCfi;
+      try { displayTarget = book.spine.get(restoreCfi)?.href || restoreCfi; } catch(e) {}
+      Promise.resolve().then(() => activeRendition.display(displayTarget)).then(finishInitialDisplay).catch(displayFallback);
     } else {
       activeRendition.display().then(() => finishInitialDisplay()).catch((error) => {
         logApp('Could not display EPUB:', error?.message || error);
       });
+    }
+  }
+
+  function scrollRenditionToCfi(activeRendition, cfi) {
+    const manager = activeRendition?.manager;
+    const delta = manager?.layout?.delta;
+    const contents = activeRendition?.getContents?.();
+    if (!manager || !delta || !contents?.length) return;
+
+    try {
+      const location = contents[0].locationOf(cfi);
+      const page = Math.max(0, Math.floor((location?.left || 0) / delta));
+      const maxScroll = Math.max(0, manager.container.scrollWidth - delta);
+      manager.scrollTo(Math.min(page * delta, maxScroll), 0, true);
+    } catch(e) {
+      logApp('Could not position restored CFI:', e?.message || e);
     }
   }
 
@@ -1317,6 +1434,12 @@
     if (doc.__epubReaperBound) return;
     doc.__epubReaperBound = true;
 
+    // Navigation must be bound before optional book-content enhancement.
+    // A malformed link or unusual XHTML construct must never disable keys.
+    doc.addEventListener('keydown', onKey, true);
+    win?.addEventListener('keydown', onKey, true);
+    doc.addEventListener('focusin', reportKeyboardContext, true);
+    doc.addEventListener('focusout', () => postNative('keyboardContext', { capture: true }), true);
 
     // Inject user-select styles into chapter XHTML
     try {
@@ -1392,7 +1515,6 @@
         if (selIdx !== -1) {
           targetedWordIndex = selIdx;
           lastResumeWordIndex = selIdx;
-          lastResumePageScroll = rendition?.manager?.container?.scrollLeft || 0;
           if (isSpeedTargeting) highlightResumeWord(rsvpWords[selIdx], false);
           return;
         }
@@ -1403,7 +1525,6 @@
         if (clickedIdx !== -1) {
           targetedWordIndex = clickedIdx;
           lastResumeWordIndex = clickedIdx;
-          lastResumePageScroll = rendition?.manager?.container?.scrollLeft || 0;
           if (isSpeedTargeting) highlightResumeWord(rsvpWords[clickedIdx], false);
         }
       }
@@ -1414,15 +1535,11 @@
       handleInteraction(e);
     }, true);
     doc.addEventListener('mouseup', handleInteraction, true);
-    doc.addEventListener('keydown', onKey, true);
   }
 
   // ── 2-Phase Speed Reading Engine ──────────────────────────────────────────
-  let lastSelectedCfi = null;
-  let lastSelectedText = null;
   let lastResumeMarkerCfi = null;
   let lastResumeWordIndex = null;
-  let lastResumePageScroll = null;
 
   function toggleSpeedReadingMode() {
     if (isRsvpOpen) {
@@ -1462,7 +1579,6 @@
           if (idx !== -1) {
             targetedWordIndex = idx;
             lastResumeWordIndex = idx;
-            lastResumePageScroll = rendition?.manager?.container?.scrollLeft || 0;
             highlightResumeWord(rsvpWords[idx], false);
           }
           break;
@@ -1492,15 +1608,11 @@
       return;
     }
 
-    const manager = rendition?.manager;
-    const currentScroll = manager?.container?.scrollLeft || 0;
-
     rendition.getContents()?.forEach(attachContentsListeners);
 
     if (typeof forcedIdx === 'number' && forcedIdx >= 0 && forcedIdx < rsvpWords.length) {
       targetedWordIndex = forcedIdx;
       lastResumeWordIndex = forcedIdx;
-      lastResumePageScroll = currentScroll;
       highlightResumeWord(rsvpWords[targetedWordIndex], true);
     } else if (
       lastResumeWordIndex !== null &&
@@ -1515,7 +1627,6 @@
         targetedWordIndex = 0;
       }
       lastResumeWordIndex = targetedWordIndex;
-      lastResumePageScroll = currentScroll;
       highlightResumeWord(rsvpWords[targetedWordIndex], false);
     }
   }
@@ -1538,8 +1649,6 @@
       } catch(e) {}
     });
 
-    lastSelectedText = null;
-    lastSelectedCfi = null;
   }
 
   function startRsvpPlayback(startIdx) {
@@ -1572,8 +1681,6 @@
     if (rsvpWords.length && rsvpIndex < rsvpWords.length) {
       targetedWordIndex = rsvpIndex;
       lastResumeWordIndex = rsvpIndex;
-      const manager = rendition?.manager;
-      lastResumePageScroll = manager?.container?.scrollLeft || 0;
       highlightResumeWord(rsvpWords[targetedWordIndex]);
     }
 
@@ -2351,8 +2458,26 @@
     }
   };
 
+  window.handleNativeKey = function(key) {
+    onKey({
+      key,
+      target: null,
+      altKey: false,
+      ctrlKey: false,
+      metaKey: false,
+      shiftKey: false,
+      preventDefault() {}
+    });
+  };
+
   window.triggerAction = function(action) {
     switch (action) {
+      case 'previous-page':
+        pagePrev();
+        break;
+      case 'next-page':
+        pageNext();
+        break;
       case 'toggle-spread':
         setSpread(currentSpread === 'single' ? 'double' : 'single');
         break;
